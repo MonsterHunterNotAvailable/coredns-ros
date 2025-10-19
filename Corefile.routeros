@@ -1,0 +1,25 @@
+.:1053 {
+    # 智能 DNS 分流插件
+    domainswitch {
+        list china-domains.txt
+        special 223.5.5.5
+        default 8.8.8.8
+        
+        # RouterOS 配置（单层格式）
+        routeros_enable true
+        routeros_host 172.16.40.248
+        routeros_user admin
+        routeros_password your_routeros_password
+        routeros_list china_site
+    }
+    
+    # 启用缓存
+    cache 30
+    
+    # 记录日志
+    log
+    
+    # 记录错误
+    errors
+}
+

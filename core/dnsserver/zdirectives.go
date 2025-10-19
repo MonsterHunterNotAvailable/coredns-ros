@@ -57,6 +57,7 @@ var Directives = []string{
 	"secondary",
 	"etcd",
 	"loop",
+	"domainswitch",
 	"forward",
 	"grpc",
 	"erratic",

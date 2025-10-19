@@ -1,0 +1,6 @@
+# 忽略所有日志文件
+*.log
+
+# 但保留 .gitignore 文件本身
+!.gitignore
+
