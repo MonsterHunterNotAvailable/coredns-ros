@@ -23,7 +23,7 @@ The maximum term length of each steering committee member is one year, with no t
 
 Steering committee member are elected by CoreDNS maintainers.
 
-The steering committee members are identified in the [CODEOWNERS](CODEOWNERS) file.
+The steering committee members are identified in the [CODEOWNERS](../CODEOWNERS) file.
 
 ## Expectations from Maintainers
 
@@ -58,12 +58,12 @@ fails to meet the principles of CoreDNS community, or adhere to the [Code of Con
 ## Changes in Project Steering Committee Membership
 
 Changes to the project steering committee membership are initiated by opening a separate GitHub PR updating
-the [CODEOWNERS](CODEOWNERS) file for each steering committee member candidate.
+the [CODEOWNERS](../CODEOWNERS) file for each steering committee member candidate.
 
 Anyone from the CoreDNS community can vote on the PR with either +1 or -1.
 
 Only the following votes are binding:
-1) Any maintainer that has been listed in the [CODEOWNERS](CODEOWNERS) file before the PR is opened.
+1) Any maintainer that has been listed in the [CODEOWNERS](../CODEOWNERS) file before the PR is opened.
 2) Any maintainer from an organization may cast the vote for that organization. However, no organization
 should have more binding votes than 1/5 of the total number of maintainers defined in 1).
 

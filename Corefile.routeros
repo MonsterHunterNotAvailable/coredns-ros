@@ -1,32 +1,41 @@
-.:1053 {
-    # 屏蔽 IPv6 (AAAA) 查询
-    # 对所有 AAAA 类型的查询返回空响应
+.:53 {
+    # 过滤 IPv6 查询
     template ANY AAAA {
         rcode NOERROR
     }
     
-    # 智能 DNS 分流插件
+    # 智能 DNS 分流插件（多域名列表配置）
     domainswitch {
-        list china-domains.txt
-        special 223.5.5.5
+
+        #默认 dns 服务器
         default 8.8.8.8
-        block_ip block_ip.txt    # 新增：IP 黑名单文件
- 
-        # RouterOS 配置（单层格式）
+        
+        #       域名清单文件名            对应的dns        address_list
+        list    china_domains.txt       223.5.5.5       china_ip
+        list    gfwlist_domains.txt     4.4.4.4         gfw_ip
+
+        #如果查询返回block_ip则不处理这个 dns 请求
+        block_ip block_ip.txt
+        
+        # RouterOS 配置
         routeros_enable true
         routeros_host 172.16.40.248
         routeros_user admin
         routeros_password your_routeros_password
-        routeros_list china_ip
+
+        #hotreload域名文件
+        #全部加载   curl -X POST http://localhost:8182/reload
+        #单独加载   curl -X POST http://localhost:8182/reload/china-domains.txt
+        hot_reload true
+        reload_port 8182
     }
     
-    # 启用缓存
+    # 启用缓存(最大缓存时间) 如果 ttl 时间小于这个以 ttl 为准
     cache 30
     
-    # 记录日志
+    # 启用日志
     log
     
-    # 记录错误
+    # 错误处理
     errors
 }
-

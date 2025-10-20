@@ -25,51 +25,62 @@ func setup(c *caddy.Controller) error {
 }
 
 // parseDomainSwitch 解析 Corefile 配置
-// 配置格式：
-// domainswitch {
-//     list /path/to/domain-list.txt
-//     special 223.5.5.5
-//     default 8.8.8.8
-//     block_ip /path/to/block_ip.txt
-//     routeros_enable true
-//     routeros_host 172.16.40.248
-//     routeros_user admin
-//     routeros_password your_password
-//     routeros_list china_site
-// }
+// 新配置格式：
+//
+//	domainswitch {
+//	    default 8.8.8.8
+//	    list china-domains.txt 223.5.5.5 china_ip
+//	    list gfw_list.txt 4.4.4.4 gfw_ip
+//	    block_ip block_ip.txt
+//	    hot_reload true
+//	    reload_port 8182
+//	    routeros_enable true
+//	    routeros_host 172.16.40.248
+//	    routeros_user admin
+//	    routeros_password your_routeros_password
+//	}
 func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 	var (
-		listFile        string
-		specialUpstream = "223.5.5.5" // 默认：阿里云 DNS
-		defaultUpstream = "8.8.8.8"   // 默认：Google DNS
-		blockIPFile     = ""           // IP 黑名单文件
-		
+		defaultUpstream = "8.8.8.8" // 默认：Google DNS
+		blockIPFile     = ""        // IP 黑名单文件
+
 		// RouterOS 配置
 		rosEnabled  = false
 		rosHost     = ""
 		rosUser     = "admin"
 		rosPassword = ""
-		rosList     = "china_site"
 	)
+
+	// 创建插件实例
+	ds := NewDomainSwitch(defaultUpstream)
 
 	for c.Next() {
 		for c.NextBlock() {
 			switch c.Val() {
-			case "list":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				listFile = c.Val()
-			case "special":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				specialUpstream = c.Val()
 			case "default":
 				if !c.NextArg() {
 					return nil, c.ArgErr()
 				}
-				defaultUpstream = c.Val()
+				ds.DefaultUpstream = c.Val()
+			case "list":
+				// 解析格式: list filename dnsserver routeros_list
+				args := c.RemainingArgs()
+				if len(args) != 3 {
+					return nil, c.Errf("list requires 3 arguments: filename dnsserver routeros_list")
+				}
+
+				listConfig := &DomainListConfig{
+					File:         args[0],
+					DNSServer:    args[1],
+					RouterOSList: args[2],
+				}
+
+				// 加载域名列表
+				if err := listConfig.LoadList(); err != nil {
+					return nil, c.Errf("failed to load domain list %s: %v", args[0], err)
+				}
+
+				ds.DomainLists = append(ds.DomainLists, listConfig)
 			case "block_ip":
 				if !c.NextArg() {
 					return nil, c.ArgErr()
@@ -95,37 +106,31 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				rosPassword = c.Val()
-			case "routeros_list":
+			case "hot_reload":
 				if !c.NextArg() {
 					return nil, c.ArgErr()
 				}
-				rosList = c.Val()
+				ds.HotReloadEnabled = c.Val() == "true"
+			case "reload_port":
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				ds.ReloadHTTPPort = c.Val()
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
 		}
 	}
 
-	// 创建插件实例
-	ds := NewDomainSwitch(specialUpstream, defaultUpstream)
-	
 	// 配置 RouterOS
 	ds.RouterOSEnabled = rosEnabled
 	ds.RouterOSHost = rosHost
 	ds.RouterOSUser = rosUser
 	ds.RouterOSPassword = rosPassword
-	ds.RouterOSList = rosList
-	
+
 	// 配置 IP 黑名单
 	ds.BlockIPFile = blockIPFile
 
-	// 加载域名列表
-	if listFile != "" {
-		if err := ds.LoadList(listFile); err != nil {
-			return nil, c.Errf("failed to load domain list: %v", err)
-		}
-	}
-	
 	// 加载 IP 黑名单
 	if blockIPFile != "" {
 		if err := ds.LoadBlockIPList(blockIPFile); err != nil {
@@ -133,6 +138,8 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 		}
 	}
 
+	// 启动 HTTP 重载服务器
+	ds.startHTTPReloadServer()
+
 	return ds, nil
 }
-
