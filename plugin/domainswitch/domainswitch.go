@@ -218,12 +218,12 @@ func isValidDomain(domain string) bool {
 	}
 
 	// 检查是否包含至少一个点
-	if !strings.Contains(domain, ".") {
-		return false
-	}
+//	if !strings.Contains(domain, ".") {
+//		return false
+//	}
 
-	// 检查是否以点开头或结尾
-	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
+	// 检查是否以点结尾
+	if strings.HasSuffix(domain, ".") {
 		return false
 	}
 
