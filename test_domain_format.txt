@@ -1,0 +1,37 @@
+# 测试域名列表文件
+# 用于验证简化后的域名加载功能
+
+# 有效域名
+baidu.com
+qq.com
+taobao.com
+google.com
+facebook.com
+
+# 带子域名的域名
+www.baidu.com
+mail.qq.com
+login.taobao.com
+
+# 数字域名
+163.com
+126.com
+360.cn
+
+# 国际化域名
+github.com
+stackoverflow.com
+wikipedia.org
+
+# 无效域名（应该被跳过并记录警告）
+invalid..domain.com
+.invalid-start.com
+invalid-end-.com
+toolongdomainlabelthatexceedssixtythreecharacterslimitwhichisnotallowed.com
+
+# 空行和注释会被跳过
+
+# 更多有效域名
+sina.com.cn
+sohu.com
+youku.com

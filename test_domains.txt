@@ -1,0 +1,6 @@
+# 测试域名列表
+baidu.com
+qq.com
+taobao.com
+sina.com.cn
+163.com
