@@ -30,6 +30,7 @@ func setup(c *caddy.Controller) error {
 //     list /path/to/domain-list.txt
 //     special 223.5.5.5
 //     default 8.8.8.8
+//     block_ip /path/to/block_ip.txt
 //     routeros_enable true
 //     routeros_host 172.16.40.248
 //     routeros_user admin
@@ -41,6 +42,7 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 		listFile        string
 		specialUpstream = "223.5.5.5" // 默认：阿里云 DNS
 		defaultUpstream = "8.8.8.8"   // 默认：Google DNS
+		blockIPFile     = ""           // IP 黑名单文件
 		
 		// RouterOS 配置
 		rosEnabled  = false
@@ -68,6 +70,11 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				defaultUpstream = c.Val()
+			case "block_ip":
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				blockIPFile = c.Val()
 			case "routeros_enable":
 				if !c.NextArg() {
 					return nil, c.ArgErr()
@@ -108,11 +115,21 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 	ds.RouterOSUser = rosUser
 	ds.RouterOSPassword = rosPassword
 	ds.RouterOSList = rosList
+	
+	// 配置 IP 黑名单
+	ds.BlockIPFile = blockIPFile
 
 	// 加载域名列表
 	if listFile != "" {
 		if err := ds.LoadList(listFile); err != nil {
 			return nil, c.Errf("failed to load domain list: %v", err)
+		}
+	}
+	
+	// 加载 IP 黑名单
+	if blockIPFile != "" {
+		if err := ds.LoadBlockIPList(blockIPFile); err != nil {
+			return nil, c.Errf("failed to load IP block list: %v", err)
 		}
 	}
 

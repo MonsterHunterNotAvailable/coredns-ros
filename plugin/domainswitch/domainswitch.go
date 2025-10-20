@@ -40,6 +40,11 @@ type DomainSwitch struct {
 	RouterOSPassword string
 	RouterOSList     string
 	httpClient       *http.Client
+	
+	// IP 黑名单配置
+	BlockIPFile      string // IP 黑名单文件路径
+	blockIPNets      []*net.IPNet // CIDR 格式的 IP 黑名单
+	blockMu          sync.RWMutex // 黑名单读写锁
 }
 
 // Name 返回插件名称
@@ -49,6 +54,24 @@ func (ds *DomainSwitch) Name() string { return "domainswitch" }
 func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 	qname := strings.ToLower(strings.TrimSuffix(state.Name(), "."))
+
+	// 过滤 IPv6 (AAAA) 查询，直接返回空响应
+	if state.QType() == dns.TypeAAAA {
+		logger.Infof("[FILTER] Blocked IPv6 query for %s", qname)
+		
+		// 构造空响应（NODATA）
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Authoritative = true
+		m.RecursionAvailable = true
+		
+		err := w.WriteMsg(m)
+		if err != nil {
+			logger.Errorf("Failed to write AAAA block response: %v", err)
+			return dns.RcodeServerFailure, err
+		}
+		return dns.RcodeSuccess, nil
+	}
 
 	// 检查域名是否在特殊列表中
 	upstream := ds.getUpstream(qname)
@@ -65,6 +88,26 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	if err != nil {
 		logger.Errorf("Failed to query upstream %s: %v", upstream, err)
 		return dns.RcodeServerFailure, err
+	}
+
+	// 检查解析结果是否包含黑名单 IP
+	if ds.BlockIPFile != "" && msg.Rcode == dns.RcodeSuccess {
+		if ds.containsBlockedIP(msg) {
+			logger.Infof("[BLOCKED] %s contains blocked IP, returning empty response", qname)
+			
+			// 构造空响应（NODATA）
+			m := new(dns.Msg)
+			m.SetReply(r)
+			m.Authoritative = true
+			m.RecursionAvailable = true
+			
+			err := w.WriteMsg(m)
+			if err != nil {
+				logger.Errorf("Failed to write blocked IP response: %v", err)
+				return dns.RcodeServerFailure, err
+			}
+			return dns.RcodeSuccess, nil
+		}
 	}
 
 	// 如果是中国域名且启用了 RouterOS，提取 IP 并添加到地址列表
@@ -213,7 +256,7 @@ func (ds *DomainSwitch) addToRouterOS(domain string, msg *dns.Msg) {
 // addIPToRouterOS 通过 RouterOS REST API 添加 IP 到地址列表
 func (ds *DomainSwitch) addIPToRouterOS(ip, comment string) error {
 	// RouterOS REST API URL
-	url := fmt.Sprintf("https://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
+	url := fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
 
 	// 构造请求体
 	data := map[string]string{
@@ -253,5 +296,109 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string) error {
 	}
 
 	return nil
+}
+
+// LoadBlockIPList 从文件加载 IP 黑名单（CIDR 格式）
+func (ds *DomainSwitch) LoadBlockIPList(file string) error {
+	logger.Infof("Loading IP block list from: %s", file)
+	
+	f, err := os.Open(file)
+	if err != nil {
+		return fmt.Errorf("failed to open IP block list file: %v", err)
+	}
+	defer f.Close()
+
+	ds.blockMu.Lock()
+	defer ds.blockMu.Unlock()
+	
+	ds.blockIPNets = nil // 清空现有列表
+	scanner := bufio.NewScanner(f)
+	count := 0
+	
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		
+		// 跳过空行和注释
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		
+		// 解析 CIDR
+		_, ipNet, err := net.ParseCIDR(line)
+		if err != nil {
+			// 尝试解析单个 IP，自动添加 /32 或 /128
+			ip := net.ParseIP(line)
+			if ip != nil {
+				var cidr string
+				if ip.To4() != nil {
+					cidr = line + "/32" // IPv4
+				} else {
+					cidr = line + "/128" // IPv6
+				}
+				_, ipNet, err = net.ParseCIDR(cidr)
+			}
+		}
+		
+		if err != nil {
+			logger.Warningf("Invalid IP/CIDR format: %s, error: %v", line, err)
+			continue
+		}
+		
+		ds.blockIPNets = append(ds.blockIPNets, ipNet)
+		count++
+	}
+	
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading IP block list: %v", err)
+	}
+	
+	logger.Infof("Loaded %d IP blocks from %s", count, file)
+	return nil
+}
+
+// containsBlockedIP 检查 DNS 响应是否包含黑名单中的 IP
+func (ds *DomainSwitch) containsBlockedIP(msg *dns.Msg) bool {
+	if msg == nil || len(msg.Answer) == 0 {
+		return false
+	}
+
+	ds.blockMu.RLock()
+	defer ds.blockMu.RUnlock()
+	
+	// 如果没有加载黑名单，直接返回 false
+	if len(ds.blockIPNets) == 0 {
+		return false
+	}
+
+	// 检查所有 A 记录的 IP 地址
+	for _, answer := range msg.Answer {
+		if a, ok := answer.(*dns.A); ok {
+			ip := a.A
+			if ds.isIPBlocked(ip) {
+				logger.Infof("[BLOCKED] IP %s is in block list", ip.String())
+				return true
+			}
+		}
+		// 也检查 AAAA 记录（IPv6）
+		if aaaa, ok := answer.(*dns.AAAA); ok {
+			ip := aaaa.AAAA
+			if ds.isIPBlocked(ip) {
+				logger.Infof("[BLOCKED] IPv6 %s is in block list", ip.String())
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// isIPBlocked 检查单个 IP 是否在黑名单中
+func (ds *DomainSwitch) isIPBlocked(ip net.IP) bool {
+	for _, ipNet := range ds.blockIPNets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 

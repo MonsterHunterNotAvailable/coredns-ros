@@ -1,16 +1,23 @@
 .:1053 {
+    # 屏蔽 IPv6 (AAAA) 查询
+    # 对所有 AAAA 类型的查询返回空响应
+    template ANY AAAA {
+        rcode NOERROR
+    }
+    
     # 智能 DNS 分流插件
     domainswitch {
         list china-domains.txt
         special 223.5.5.5
         default 8.8.8.8
-        
+        block_ip block_ip.txt    # 新增：IP 黑名单文件
+ 
         # RouterOS 配置（单层格式）
         routeros_enable true
         routeros_host 172.16.40.248
         routeros_user admin
         routeros_password your_routeros_password
-        routeros_list china_site
+        routeros_list china_ip
     }
     
     # 启用缓存
