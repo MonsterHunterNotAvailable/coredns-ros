@@ -1,0 +1,80 @@
+### 这里面都是 dns 服务器地址，如果域名解析的结果是 dns 服务器，则不返回给客户端解析结果了
+# Google Public DNS
+8.8.8.8
+8.8.4.4
+
+# Cloudflare DNS
+1.1.1.1
+1.0.0.1
+
+# Quad9 DNS
+9.9.9.9
+149.112.112.112
+
+# OpenDNS / Cisco
+208.67.222.222
+208.67.220.220
+
+# Verisign Public DNS
+64.6.64.6
+64.6.65.6
+
+# Level 3 / CenturyLink
+209.244.0.3
+209.244.0.4
+4.2.2.1
+4.2.2.2
+4.2.2.3
+4.2.2.4
+4.2.2.5
+4.2.2.6
+
+# Comodo Secure DNS
+8.26.56.26
+8.20.247.20
+
+# AdGuard DNS
+94.140.14.14
+94.140.15.15
+
+# Norton ConnectSafe (may be discontinued)
+199.85.126.10
+199.85.127.10
+
+# UltraDNS / Neustar
+156.154.70.1
+156.154.71.1
+
+# Yandex DNS
+77.88.8.8
+77.88.8.1
+
+# DNS.WATCH
+84.200.69.80
+84.200.70.40
+
+# 114DNS (China)
+114.114.114.114
+114.114.115.115
+
+# AliDNS (Alibaba Cloud)
+223.5.5.5
+223.6.6.6
+
+# DNSPod / Tencent DNS
+119.29.29.29
+119.28.28.28
+182.254.116.116
+
+# Baidu DNS
+180.76.76.76
+
+# Tencent Cloud DNS (alternative)
+120.53.53.84
+
+# Guangzhou region public DNS
+202.46.34.74
+
+# China Telecom backbone (example)
+202.96.134.133
+
