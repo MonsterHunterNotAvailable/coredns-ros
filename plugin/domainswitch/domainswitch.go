@@ -104,27 +104,16 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	}
 
 	// 检查解析结果是否包含黑名单 IP
+	isBlocked := false
 	if ds.BlockIPFile != "" && msg.Rcode == dns.RcodeSuccess {
 		if ds.containsBlockedIP(msg) {
-			logger.Infof("[BLOCKED] %s contains blocked IP, returning empty response", qname)
-
-			// 构造空响应（NODATA）
-			m := new(dns.Msg)
-			m.SetReply(r)
-			m.Authoritative = true
-			m.RecursionAvailable = true
-
-			err := w.WriteMsg(m)
-			if err != nil {
-				logger.Errorf("Failed to write blocked IP response: %v", err)
-				return dns.RcodeServerFailure, err
-			}
-			return dns.RcodeSuccess, nil
+			logger.Infof("[BLOCKED] %s contains blocked IP, returning DNS result but not adding to RouterOS", qname)
+			isBlocked = true
 		}
 	}
 
-	// 如果匹配到列表且启用了 RouterOS，提取 IP 并添加到地址列表
-	if listConfig != nil && ds.RouterOSEnabled && msg.Rcode == dns.RcodeSuccess {
+	// 如果匹配到列表且启用了 RouterOS，且 IP 不在黑名单中，提取 IP 并添加到地址列表
+	if listConfig != nil && ds.RouterOSEnabled && msg.Rcode == dns.RcodeSuccess && !isBlocked {
 		go ds.addToRouterOS(qname, msg, listConfig.RouterOSList)
 	}
 

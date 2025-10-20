@@ -78,3 +78,5 @@
 # China Telecom backbone (example)
 202.96.134.133
 
+##test www.baidu.com
+##183.2.172.0/24
