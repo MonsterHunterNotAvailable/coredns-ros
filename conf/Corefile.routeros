@@ -12,7 +12,7 @@
         
         #       域名清单文件名            对应的dns        address_list
         list    china_domains.txt       223.5.5.5       china_ip
-        list    gfwlist_domains.txt     4.4.4.4         gfw_ip
+        list    gfwlist_domains.txt     8.8.4.4         gfw_ip
 
         #如果查询返回block_ip则不会添加到 ros 的address lists 中
         block_ip block_ip.txt
