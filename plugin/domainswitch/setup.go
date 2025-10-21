@@ -1,6 +1,8 @@
 package domainswitch
 
 import (
+	"path/filepath"
+
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
@@ -51,6 +53,9 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 		rosPassword = ""
 	)
 
+	// 获取 Corefile 的目录路径
+	corefileDir := filepath.Dir(c.File())
+
 	// 创建插件实例
 	ds := NewDomainSwitch(defaultUpstream)
 
@@ -69,8 +74,14 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.Errf("list requires 3 arguments: filename dnsserver routeros_list")
 				}
 
+				// 处理相对路径：相对于 Corefile 的路径
+				filename := args[0]
+				if !filepath.IsAbs(filename) {
+					filename = filepath.Join(corefileDir, filename)
+				}
+
 				listConfig := &DomainListConfig{
-					File:         args[0],
+					File:         filename,
 					DNSServer:    args[1],
 					RouterOSList: args[2],
 				}
@@ -86,6 +97,10 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				blockIPFile = c.Val()
+				// 处理相对路径：相对于 Corefile 的路径
+				if blockIPFile != "" && !filepath.IsAbs(blockIPFile) {
+					blockIPFile = filepath.Join(corefileDir, blockIPFile)
+				}
 			case "routeros_enable":
 				if !c.NextArg() {
 					return nil, c.ArgErr()
