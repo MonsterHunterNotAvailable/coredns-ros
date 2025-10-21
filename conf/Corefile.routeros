@@ -31,6 +31,9 @@
 
         ##关闭详细日志
         verbose_log false
+        
+        ##启用 RouterOS 自动 TTL 管理
+        routeros_auto_ttl true
     }
     
     # 启用缓存(最大缓存时间) 如果 ttl 时间小于这个以 ttl 为准

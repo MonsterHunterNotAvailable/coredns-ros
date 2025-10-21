@@ -61,6 +61,20 @@ type DomainSwitch struct {
 
 	// 日志配置
 	VerboseLog bool // 是否启用详细日志（域名解析、RouterOS 操作等）
+
+	// RouterOS Auto TTL 配置
+	RouterOSAutoTTL bool                         // 是否启用 RouterOS 自动 TTL 管理
+	addressCache    map[string]map[string]string // 缓存 RouterOS 地址列表 [listName][ip] = id
+	addressCacheMu  sync.RWMutex                 // 地址缓存读写锁
+}
+
+// RouterOSAddressItem RouterOS 地址列表项
+type RouterOSAddressItem struct {
+	ID      string `json:".id"`
+	List    string `json:"list"`
+	Address string `json:"address"`
+	Comment string `json:"comment,omitempty"`
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // Name 返回插件名称
@@ -505,6 +519,10 @@ func NewDomainSwitch(defaultUpstream string) *DomainSwitch {
 
 		// 日志默认配置
 		VerboseLog: true, // 默认启用详细日志
+
+		// RouterOS Auto TTL 默认配置
+		RouterOSAutoTTL: false,                              // 默认关闭 RouterOS 自动 TTL
+		addressCache:    make(map[string]map[string]string), // 初始化地址缓存
 	}
 }
 
@@ -539,16 +557,53 @@ func (ds *DomainSwitch) addToRouterOS(domain string, msg *dns.Msg, addressList s
 	}
 }
 
-// addIPToRouterOS 通过 RouterOS REST API 添加 IP 到地址列表
+// addIPToRouterOS 通过 RouterOS REST API 添加或更新 IP 到地址列表
 func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
-	// RouterOS REST API URL
-	url := fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
+	var url string
+	var method string
+	var data map[string]string
 
-	// 构造请求体
-	data := map[string]string{
-		"list":    addressList,
-		"address": ip,
-		"comment": comment,
+	// 检查是否启用 RouterOS Auto TTL 并且 IP 已存在
+	if ds.RouterOSAutoTTL {
+		ds.addressCacheMu.RLock()
+		existingID, exists := ds.addressCache[addressList][ip]
+		ds.addressCacheMu.RUnlock()
+
+		if exists {
+			// IP 已存在，使用更新接口
+			url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/set", ds.RouterOSHost)
+			method = "POST"
+			data = map[string]string{
+				".id":     existingID,
+				"comment": comment,
+				"timeout": "24:00:00", // 24 小时 TTL
+			}
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS Update] Updating existing IP %s in list %s (ID: %s)", ip, addressList, existingID)
+			}
+		} else {
+			// IP 不存在，使用添加接口
+			url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
+			method = "POST"
+			data = map[string]string{
+				"list":    addressList,
+				"address": ip,
+				"comment": comment,
+				"timeout": "24:00:00", // 24 小时 TTL
+			}
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS Add] Adding new IP %s to list %s", ip, addressList)
+			}
+		}
+	} else {
+		// 传统模式，直接添加
+		url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
+		method = "POST"
+		data = map[string]string{
+			"list":    addressList,
+			"address": ip,
+			"comment": comment,
+		}
 	}
 
 	jsonData, err := json.Marshal(data)
@@ -603,8 +658,117 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 	}
 
 	if ds.VerboseLog {
-		logger.Infof("[RouterOS POST] Success - IP %s added to list %s", ip, addressList)
+		logger.Infof("[RouterOS POST] Success - IP %s added/updated to list %s", ip, addressList)
 	}
+
+	// 如果启用 RouterOS Auto TTL 且是添加操作，需要从响应中获取新的 ID 并更新缓存
+	if ds.RouterOSAutoTTL && method == "POST" && strings.Contains(url, "/add") {
+		// 尝试从响应中解析新创建的 ID
+		var response map[string]interface{}
+		if err := json.Unmarshal(body, &response); err == nil {
+			if ret, ok := response["ret"].(string); ok {
+				// 更新缓存
+				ds.addressCacheMu.Lock()
+				if ds.addressCache[addressList] == nil {
+					ds.addressCache[addressList] = make(map[string]string)
+				}
+				ds.addressCache[addressList][ip] = ret
+				ds.addressCacheMu.Unlock()
+
+				if ds.VerboseLog {
+					logger.Infof("[RouterOS Cache] Added IP %s to cache with ID %s", ip, ret)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// loadRouterOSAddressList 从 RouterOS 加载指定地址列表的现有条目
+func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
+	if !ds.RouterOSEnabled || !ds.RouterOSAutoTTL {
+		return nil
+	}
+
+	logger.Infof("Loading RouterOS address list: %s", listName)
+
+	// RouterOS REST API URL for querying address list
+	url := fmt.Sprintf("http://%s/rest/ip/firewall/address-list?list=%s", ds.RouterOSHost, listName)
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// 设置 HTTP Basic Auth
+	req.SetBasicAuth(ds.RouterOSUser, ds.RouterOSPassword)
+	req.Header.Set("Accept", "application/json")
+
+	if ds.VerboseLog {
+		logger.Infof("[RouterOS Query] Loading address list: %s", listName)
+	}
+
+	// 发送请求
+	resp, err := ds.httpClient.Do(req)
+	if err != nil {
+		logger.Errorf("Failed to query RouterOS address list %s: %v", listName, err)
+		return fmt.Errorf("failed to query RouterOS: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("RouterOS API returned status %d", resp.StatusCode)
+	}
+
+	// 解析 JSON 响应
+	var items []RouterOSAddressItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return fmt.Errorf("failed to parse RouterOS response: %v", err)
+	}
+
+	// 更新地址缓存
+	ds.addressCacheMu.Lock()
+	if ds.addressCache[listName] == nil {
+		ds.addressCache[listName] = make(map[string]string)
+	}
+
+	// 清空现有缓存
+	ds.addressCache[listName] = make(map[string]string)
+
+	// 添加查询到的地址
+	for _, item := range items {
+		ds.addressCache[listName][item.Address] = item.ID
+	}
+	ds.addressCacheMu.Unlock()
+
+	logger.Infof("Loaded %d existing addresses from RouterOS list: %s", len(items), listName)
+	return nil
+}
+
+// initializeRouterOSCache 初始化 RouterOS 地址缓存
+func (ds *DomainSwitch) initializeRouterOSCache() error {
+	if !ds.RouterOSEnabled || !ds.RouterOSAutoTTL {
+		return nil
+	}
+
+	logger.Infof("Initializing RouterOS address cache...")
+
+	// 为每个域名列表加载现有地址
+	for _, listConfig := range ds.DomainLists {
+		if err := ds.loadRouterOSAddressList(listConfig.RouterOSList); err != nil {
+			logger.Warningf("Failed to load RouterOS address list %s: %v", listConfig.RouterOSList, err)
+		}
+	}
+
 	return nil
 }
 

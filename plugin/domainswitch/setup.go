@@ -37,6 +37,7 @@ func setup(c *caddy.Controller) error {
 //	    hot_reload true
 //	    reload_port 8182
 //	    verbose_log false
+//	    routeros_auto_ttl true
 //	    routeros_enable true
 //	    routeros_host 172.16.40.248
 //	    routeros_user admin
@@ -137,6 +138,11 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				ds.VerboseLog = c.Val() == "true"
+			case "routeros_auto_ttl":
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				ds.RouterOSAutoTTL = c.Val() == "true"
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
@@ -161,6 +167,13 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 
 	// 启动 HTTP 重载服务器
 	ds.startHTTPReloadServer()
+
+	// 如果启用 RouterOS Auto TTL，初始化 RouterOS 地址缓存
+	if ds.RouterOSAutoTTL && ds.RouterOSEnabled {
+		if err := ds.initializeRouterOSCache(); err != nil {
+			logger.Warningf("Failed to initialize RouterOS cache: %v", err)
+		}
+	}
 
 	return ds, nil
 }

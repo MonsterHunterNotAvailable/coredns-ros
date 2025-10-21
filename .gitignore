@@ -5,3 +5,4 @@ conf/Corefile
 build/
 release/
 vendor/
+/conf/Corefile.test
