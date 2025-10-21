@@ -58,6 +58,9 @@ type DomainSwitch struct {
 	HotReloadEnabled bool         // 是否启用热重载
 	ReloadHTTPPort   string       // HTTP 重载端口
 	httpServer       *http.Server // HTTP 服务器
+
+	// 日志配置
+	VerboseLog bool // 是否启用详细日志（域名解析、RouterOS 操作等）
 }
 
 // Name 返回插件名称
@@ -70,7 +73,9 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 
 	// 过滤 IPv6 (AAAA) 查询，直接返回空响应
 	if state.QType() == dns.TypeAAAA {
-		logger.Infof("[FILTER] Blocked IPv6 query for %s", qname)
+		if ds.VerboseLog {
+			logger.Infof("[FILTER] Blocked IPv6 query for %s", qname)
+		}
 
 		// 构造空响应（NODATA）
 		m := new(dns.Msg)
@@ -94,7 +99,9 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	if listConfig != nil {
 		routeType = listConfig.RouterOSList
 	}
-	logger.Infof("[%s] %s -> %s", routeType, qname, upstream)
+	if ds.VerboseLog {
+		logger.Infof("[%s] %s -> %s", routeType, qname, upstream)
+	}
 
 	// 转发 DNS 请求
 	msg, _, err := ds.client.Exchange(r, net.JoinHostPort(upstream, "53"))
@@ -107,7 +114,9 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	isBlocked := false
 	if ds.BlockIPFile != "" && msg.Rcode == dns.RcodeSuccess {
 		if ds.containsBlockedIP(msg) {
-			logger.Infof("[BLOCKED] %s contains blocked IP, returning DNS result but not adding to RouterOS", qname)
+			if ds.VerboseLog {
+				logger.Infof("[BLOCKED] %s contains blocked IP, returning DNS result but not adding to RouterOS", qname)
+			}
 			isBlocked = true
 		}
 	}
@@ -218,9 +227,9 @@ func isValidDomain(domain string) bool {
 	}
 
 	// 检查是否包含至少一个点
-//	if !strings.Contains(domain, ".") {
-//		return false
-//	}
+	//	if !strings.Contains(domain, ".") {
+	//		return false
+	//	}
 
 	// 检查是否以点结尾
 	if strings.HasSuffix(domain, ".") {
@@ -493,6 +502,9 @@ func NewDomainSwitch(defaultUpstream string) *DomainSwitch {
 		// 热重载默认配置
 		HotReloadEnabled: false,
 		ReloadHTTPPort:   "8182", // 默认端口
+
+		// 日志默认配置
+		VerboseLog: true, // 默认启用详细日志
 	}
 }
 
@@ -520,7 +532,9 @@ func (ds *DomainSwitch) addToRouterOS(domain string, msg *dns.Msg, addressList s
 		if err != nil {
 			logger.Warningf("Failed to add %s (%s) to RouterOS: %v", ip, domain, err)
 		} else {
-			logger.Infof("[RouterOS] Added %s (%s) to address-list %s", ip, domain, addressList)
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS] Added %s (%s) to address-list %s", ip, domain, addressList)
+			}
 		}
 	}
 }
@@ -543,11 +557,13 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 	}
 
 	// 记录 POST 请求信息
-	logger.Infof("[RouterOS POST] URL: %s", url)
-	logger.Infof("[RouterOS POST] Method: POST")
-	logger.Infof("[RouterOS POST] Headers: Content-Type=application/json, Authorization=Basic ***")
-	logger.Infof("[RouterOS POST] Body: %s", string(jsonData))
-	logger.Infof("[RouterOS POST] Target: %s (User: %s)", ds.RouterOSHost, ds.RouterOSUser)
+	if ds.VerboseLog {
+		logger.Infof("[RouterOS POST] URL: %s", url)
+		logger.Infof("[RouterOS POST] Method: POST")
+		logger.Infof("[RouterOS POST] Headers: Content-Type=application/json, Authorization=Basic ***")
+		logger.Infof("[RouterOS POST] Body: %s", string(jsonData))
+		logger.Infof("[RouterOS POST] Target: %s (User: %s)", ds.RouterOSHost, ds.RouterOSUser)
+	}
 
 	// 创建 HTTP 请求
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
@@ -560,7 +576,9 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 	req.Header.Set("Content-Type", "application/json")
 
 	// 发送请求
-	logger.Infof("[RouterOS POST] Sending request...")
+	if ds.VerboseLog {
+		logger.Infof("[RouterOS POST] Sending request...")
+	}
 	resp, err := ds.httpClient.Do(req)
 	if err != nil {
 		logger.Errorf("[RouterOS POST] Request failed: %v", err)
@@ -572,9 +590,11 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	// 记录响应信息
-	logger.Infof("[RouterOS POST] Response Status: %d %s", resp.StatusCode, resp.Status)
-	logger.Infof("[RouterOS POST] Response Headers: %v", resp.Header)
-	logger.Infof("[RouterOS POST] Response Body: %s", string(body))
+	if ds.VerboseLog {
+		logger.Infof("[RouterOS POST] Response Status: %d %s", resp.StatusCode, resp.Status)
+		logger.Infof("[RouterOS POST] Response Headers: %v", resp.Header)
+		logger.Infof("[RouterOS POST] Response Body: %s", string(body))
+	}
 
 	// 检查响应状态
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -582,7 +602,9 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 		return fmt.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	logger.Infof("[RouterOS POST] Success - IP %s added to list %s", ip, addressList)
+	if ds.VerboseLog {
+		logger.Infof("[RouterOS POST] Success - IP %s added to list %s", ip, addressList)
+	}
 	return nil
 }
 
@@ -663,7 +685,9 @@ func (ds *DomainSwitch) containsBlockedIP(msg *dns.Msg) bool {
 		if a, ok := answer.(*dns.A); ok {
 			ip := a.A
 			if ds.isIPBlocked(ip) {
-				logger.Infof("[BLOCKED] IP %s is in block list", ip.String())
+				if ds.VerboseLog {
+					logger.Infof("[BLOCKED] IP %s is in block list", ip.String())
+				}
 				return true
 			}
 		}
@@ -671,7 +695,9 @@ func (ds *DomainSwitch) containsBlockedIP(msg *dns.Msg) bool {
 		if aaaa, ok := answer.(*dns.AAAA); ok {
 			ip := aaaa.AAAA
 			if ds.isIPBlocked(ip) {
-				logger.Infof("[BLOCKED] IPv6 %s is in block list", ip.String())
+				if ds.VerboseLog {
+					logger.Infof("[BLOCKED] IPv6 %s is in block list", ip.String())
+				}
 				return true
 			}
 		}

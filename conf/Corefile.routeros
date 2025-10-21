@@ -28,13 +28,19 @@
         #单独加载   curl -X POST http://localhost:8182/reload/china-domains.txt
         hot_reload true
         reload_port 8182
+
+        ##关闭详细日志
+        verbose_log false
     }
     
     # 启用缓存(最大缓存时间) 如果 ttl 时间小于这个以 ttl 为准
     cache 30
     
-    # 启用日志
-    log
+    # 只记录错误级别的访问日志
+    log {
+       class error
+    }
+
     
     # 错误处理
     errors

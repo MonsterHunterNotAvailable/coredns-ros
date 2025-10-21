@@ -36,6 +36,7 @@ func setup(c *caddy.Controller) error {
 //	    block_ip block_ip.txt
 //	    hot_reload true
 //	    reload_port 8182
+//	    verbose_log false
 //	    routeros_enable true
 //	    routeros_host 172.16.40.248
 //	    routeros_user admin
@@ -131,6 +132,11 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				ds.ReloadHTTPPort = c.Val()
+			case "verbose_log":
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				ds.VerboseLog = c.Val() == "true"
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
