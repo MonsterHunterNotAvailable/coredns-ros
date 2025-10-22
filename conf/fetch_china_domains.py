@@ -121,7 +121,9 @@ class ChinaDomainsParser:
                 f.write("# 这些域名是中国大陆常用网站，建议使用国内 DNS 服务器解析\n")
                 f.write("# 可以获得更好的访问速度和稳定性\n")
                 f.write("\n")
-                
+
+                f.write("cn\n")
+
                 # 写入域名列表
                 for domain in sorted_domains:
                     f.write(f"{domain}\n")
@@ -200,6 +202,7 @@ class ChinaDomainsParser:
         
         # 3. 生成统计信息
         self.generate_statistics(domains)
+
         
         # 4. 保存到文件
         self.save_domains(domains, output_file)

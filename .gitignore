@@ -6,3 +6,4 @@ build/
 release/
 vendor/
 /conf/Corefile.test
+/test_py/

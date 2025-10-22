@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,9 +64,10 @@ type DomainSwitch struct {
 	VerboseLog bool // 是否启用详细日志（域名解析、RouterOS 操作等）
 
 	// RouterOS Auto TTL 配置
-	RouterOSAutoTTL bool                         // 是否启用 RouterOS 自动 TTL 管理
-	addressCache    map[string]map[string]string // 缓存 RouterOS 地址列表 [listName][ip] = id
-	addressCacheMu  sync.RWMutex                 // 地址缓存读写锁
+	RouterOSAutoTTL bool                                      // 是否启用 RouterOS 自动 TTL 管理
+	RouterOSTTL     int                                       // RouterOS TTL 时间（秒），默认 24 小时
+	addressCache    map[string]map[string]*RouterOSCacheEntry // 缓存 RouterOS 地址列表 [listName][ip] = entry
+	addressCacheMu  sync.RWMutex                              // 地址缓存读写锁
 }
 
 // RouterOSAddressItem RouterOS 地址列表项
@@ -75,6 +77,43 @@ type RouterOSAddressItem struct {
 	Address string `json:"address"`
 	Comment string `json:"comment,omitempty"`
 	Timeout string `json:"timeout,omitempty"`
+}
+
+// RouterOSCacheEntry RouterOS 缓存条目（包含 ID 和过期时间）
+type RouterOSCacheEntry struct {
+	ID        string    // RouterOS 条目 ID
+	ExpiresAt time.Time // 过期时间
+}
+
+// parseRouterOSTimeout 解析 RouterOS 的 timeout 格式（如 "23:59:45"）并计算过期时间
+func parseRouterOSTimeout(timeout string) time.Time {
+	if timeout == "" {
+		// 如果没有 timeout，返回很远的未来时间（永不过期）
+		return time.Now().Add(365 * 24 * time.Hour)
+	}
+
+	// 解析 RouterOS 的时间格式：HH:MM:SS
+	parts := strings.Split(timeout, ":")
+	if len(parts) != 3 {
+		// 格式不正确，返回已过期
+		return time.Now().Add(-time.Hour)
+	}
+
+	hours, err1 := strconv.Atoi(parts[0])
+	minutes, err2 := strconv.Atoi(parts[1])
+	seconds, err3 := strconv.Atoi(parts[2])
+
+	if err1 != nil || err2 != nil || err3 != nil {
+		// 解析失败，返回已过期
+		return time.Now().Add(-time.Hour)
+	}
+
+	// 计算剩余时间并返回过期时间点
+	remainingDuration := time.Duration(hours)*time.Hour +
+		time.Duration(minutes)*time.Minute +
+		time.Duration(seconds)*time.Second
+
+	return time.Now().Add(remainingDuration)
 }
 
 // Name 返回插件名称
@@ -521,8 +560,9 @@ func NewDomainSwitch(defaultUpstream string) *DomainSwitch {
 		VerboseLog: true, // 默认启用详细日志
 
 		// RouterOS Auto TTL 默认配置
-		RouterOSAutoTTL: false,                              // 默认关闭 RouterOS 自动 TTL
-		addressCache:    make(map[string]map[string]string), // 初始化地址缓存
+		RouterOSAutoTTL: false,                                           // 默认关闭 RouterOS 自动 TTL
+		RouterOSTTL:     86400,                                           // 默认 TTL 24 小时（86400 秒）
+		addressCache:    make(map[string]map[string]*RouterOSCacheEntry), // 初始化地址缓存
 	}
 }
 
@@ -563,37 +603,119 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 	var method string
 	var data map[string]string
 
-	// 检查是否启用 RouterOS Auto TTL 并且 IP 已存在
+	// 检查是否启用 RouterOS Auto TTL
 	if ds.RouterOSAutoTTL {
 		ds.addressCacheMu.RLock()
-		existingID, exists := ds.addressCache[addressList][ip]
+		cacheEntry, exists := ds.addressCache[addressList][ip]
 		ds.addressCacheMu.RUnlock()
 
-		if exists {
-			// IP 已存在，使用更新接口
-			url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/set", ds.RouterOSHost)
-			method = "POST"
-			data = map[string]string{
-				".id":     existingID,
-				"comment": comment,
-				"timeout": "24:00:00", // 24 小时 TTL
-			}
+		now := time.Now()
+		var isExpired bool = true // 默认认为已过期（需要添加）
+
+		// 将 TTL 秒数转换为 RouterOS 格式（HH:MM:SS）
+		hours := ds.RouterOSTTL / 3600
+		minutes := (ds.RouterOSTTL % 3600) / 60
+		seconds := ds.RouterOSTTL % 60
+		ttlString := fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+
+		if exists && cacheEntry != nil {
+			// 检查是否过期
+			isExpired = now.After(cacheEntry.ExpiresAt)
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Update] Updating existing IP %s in list %s (ID: %s)", ip, addressList, existingID)
+				if isExpired {
+					logger.Infof("[RouterOS TTL] IP %s in list %s has expired (expired at: %s, now: %s)",
+						ip, addressList, cacheEntry.ExpiresAt.Format("15:04:05"), now.Format("15:04:05"))
+				} else {
+					remainingTime := cacheEntry.ExpiresAt.Sub(now)
+					logger.Infof("[RouterOS TTL] IP %s in list %s still valid (remaining: %s)",
+						ip, addressList, remainingTime.String())
+				}
 			}
-		} else {
-			// IP 不存在，使用添加接口
+		}
+
+		if !exists {
+			// 情况 a：IP 不存在，使用 add 接口
 			url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
 			method = "POST"
 			data = map[string]string{
 				"list":    addressList,
 				"address": ip,
 				"comment": comment,
-				"timeout": "24:00:00", // 24 小时 TTL
+				"timeout": ttlString,
 			}
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Add] Adding new IP %s to list %s", ip, addressList)
+				logger.Infof("[RouterOS Add] Adding new IP %s to list %s (TTL: %s)", ip, addressList, ttlString)
 			}
+
+			// 预先占位缓存（使用临时 ID "pending"），防止并发冲突
+			newExpiresAt := now.Add(time.Duration(ds.RouterOSTTL) * time.Second)
+			ds.addressCacheMu.Lock()
+			if ds.addressCache[addressList] == nil {
+				ds.addressCache[addressList] = make(map[string]*RouterOSCacheEntry)
+			}
+			ds.addressCache[addressList][ip] = &RouterOSCacheEntry{
+				ID:        "pending", // 临时 ID，等 RouterOS 响应后更新
+				ExpiresAt: newExpiresAt,
+			}
+			ds.addressCacheMu.Unlock()
+		} else if isExpired {
+			// 情况 b：IP 存在但已过期
+			// 先尝试用 set 更新（RouterOS 可能还没删除），如果失败再用 add
+			if cacheEntry.ID == "pending" {
+				if ds.VerboseLog {
+					logger.Infof("[RouterOS Skip] IP %s is being added, skip expired update (ID: pending)", ip)
+				}
+				return nil // 跳过，等待第一次添加完成
+			}
+
+			url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/set", ds.RouterOSHost)
+			method = "POST"
+			data = map[string]string{
+				".id":     cacheEntry.ID,
+				"comment": comment,
+				"timeout": ttlString,
+			}
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS Update] Attempting to refresh expired IP %s in list %s (ID: %s, TTL: %s)",
+					ip, addressList, cacheEntry.ID, ttlString)
+			}
+
+			// 预先更新过期时间
+			newExpiresAt := now.Add(time.Duration(ds.RouterOSTTL) * time.Second)
+			ds.addressCacheMu.Lock()
+			if existingEntry := ds.addressCache[addressList][ip]; existingEntry != nil {
+				existingEntry.ExpiresAt = newExpiresAt
+			}
+			ds.addressCacheMu.Unlock()
+		} else {
+			// 情况 c：IP 存在且未过期，使用 set 接口更新
+			// 但如果 ID 还是 "pending"，说明第一次添加正在进行中，跳过本次更新
+			if cacheEntry.ID == "pending" {
+				if ds.VerboseLog {
+					logger.Infof("[RouterOS Skip] IP %s is being added, skip update (ID: pending)", ip)
+				}
+				return nil // 跳过，等待第一次添加完成
+			}
+
+			url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/set", ds.RouterOSHost)
+			method = "POST"
+			data = map[string]string{
+				".id":     cacheEntry.ID,
+				"comment": comment,
+				"timeout": ttlString,
+			}
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS Update] Refreshing TTL for IP %s in list %s (ID: %s, TTL: %s)",
+					ip, addressList, cacheEntry.ID, ttlString)
+			}
+
+			// 预先更新过期时间
+			newExpiresAt := now.Add(time.Duration(ds.RouterOSTTL) * time.Second)
+			ds.addressCacheMu.Lock()
+			if existingEntry := ds.addressCache[addressList][ip]; existingEntry != nil {
+				existingEntry.ExpiresAt = newExpiresAt
+			}
+			ds.addressCacheMu.Unlock()
 		}
 	} else {
 		// 传统模式，直接添加
@@ -653,6 +775,72 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 
 	// 检查响应状态
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		// 特殊处理：如果是 set 操作失败（404），说明 RouterOS 已经删除了该记录，尝试用 add 重新添加
+		if ds.RouterOSAutoTTL && strings.Contains(url, "/set") && resp.StatusCode == http.StatusNotFound {
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS Retry] Set failed (404), entry was deleted by RouterOS. Retrying with add for IP %s", ip)
+			}
+
+			// 重新构造 add 请求
+			hours := ds.RouterOSTTL / 3600
+			minutes := (ds.RouterOSTTL % 3600) / 60
+			seconds := ds.RouterOSTTL % 60
+			ttlString := fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+
+			addURL := fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
+			addData := map[string]string{
+				"list":    addressList,
+				"address": ip,
+				"comment": comment,
+				"timeout": ttlString,
+			}
+
+			jsonData, _ := json.Marshal(addData)
+			addReq, err := http.NewRequest("POST", addURL, bytes.NewBuffer(jsonData))
+			if err != nil {
+				return fmt.Errorf("failed to create retry add request: %v", err)
+			}
+			addReq.SetBasicAuth(ds.RouterOSUser, ds.RouterOSPassword)
+			addReq.Header.Set("Content-Type", "application/json")
+
+			// 发送 add 请求
+			addResp, err := ds.httpClient.Do(addReq)
+			if err != nil {
+				return fmt.Errorf("failed to retry add request: %v", err)
+			}
+			defer addResp.Body.Close()
+
+			addBody, _ := io.ReadAll(addResp.Body)
+
+			if addResp.StatusCode != http.StatusOK && addResp.StatusCode != http.StatusCreated {
+				logger.Errorf("[RouterOS Retry] Add also failed - Status: %d, Body: %s", addResp.StatusCode, string(addBody))
+				return fmt.Errorf("RouterOS retry add returned status %d: %s", addResp.StatusCode, string(addBody))
+			}
+
+			// 更新缓存中的 ID
+			var addResponse map[string]interface{}
+			if err := json.Unmarshal(addBody, &addResponse); err == nil {
+				if ret, ok := addResponse["ret"].(string); ok {
+					ds.addressCacheMu.Lock()
+					if ds.addressCache[addressList] == nil {
+						ds.addressCache[addressList] = make(map[string]*RouterOSCacheEntry)
+					}
+					if ds.addressCache[addressList][ip] != nil {
+						ds.addressCache[addressList][ip].ID = ret
+						if ds.VerboseLog {
+							logger.Infof("[CoreDNS Cache] Retry add successful, updated IP %s ID to %s", ip, ret)
+						}
+					}
+					ds.addressCacheMu.Unlock()
+				}
+			}
+
+			if ds.VerboseLog {
+				logger.Infof("[RouterOS Retry] Successfully added IP %s to list %s", ip, addressList)
+			}
+			return nil
+		}
+
 		logger.Errorf("[RouterOS POST] API Error - Status: %d, Body: %s", resp.StatusCode, string(body))
 		return fmt.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
 	}
@@ -661,23 +849,20 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 		logger.Infof("[RouterOS POST] Success - IP %s added/updated to list %s", ip, addressList)
 	}
 
-	// 如果启用 RouterOS Auto TTL 且是添加操作，需要从响应中获取新的 ID 并更新缓存
+	// 如果启用 RouterOS Auto TTL 且是添加操作，需要更新缓存中的真实 ID
 	if ds.RouterOSAutoTTL && method == "POST" && strings.Contains(url, "/add") {
-		// 尝试从响应中解析新创建的 ID
+		// 添加操作：从响应中获取新的 ID，更新缓存中的临时 ID
 		var response map[string]interface{}
 		if err := json.Unmarshal(body, &response); err == nil {
 			if ret, ok := response["ret"].(string); ok {
-				// 更新缓存
 				ds.addressCacheMu.Lock()
-				if ds.addressCache[addressList] == nil {
-					ds.addressCache[addressList] = make(map[string]string)
+				if existingEntry := ds.addressCache[addressList][ip]; existingEntry != nil {
+					existingEntry.ID = ret // 更新临时 ID 为真实 ID
+					if ds.VerboseLog {
+						logger.Infof("[CoreDNS Cache] Updated IP %s ID from pending to %s", ip, ret)
+					}
 				}
-				ds.addressCache[addressList][ip] = ret
 				ds.addressCacheMu.Unlock()
-
-				if ds.VerboseLog {
-					logger.Infof("[RouterOS Cache] Added IP %s to cache with ID %s", ip, ret)
-				}
 			}
 		}
 	}
@@ -738,15 +923,23 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 	// 更新地址缓存
 	ds.addressCacheMu.Lock()
 	if ds.addressCache[listName] == nil {
-		ds.addressCache[listName] = make(map[string]string)
+		ds.addressCache[listName] = make(map[string]*RouterOSCacheEntry)
 	}
 
 	// 清空现有缓存
-	ds.addressCache[listName] = make(map[string]string)
+	ds.addressCache[listName] = make(map[string]*RouterOSCacheEntry)
 
 	// 添加查询到的地址
 	for _, item := range items {
-		ds.addressCache[listName][item.Address] = item.ID
+		expiresAt := parseRouterOSTimeout(item.Timeout)
+		ds.addressCache[listName][item.Address] = &RouterOSCacheEntry{
+			ID:        item.ID,
+			ExpiresAt: expiresAt,
+		}
+		if ds.VerboseLog {
+			logger.Infof("[RouterOS Cache] Loaded %s (ID: %s, Timeout: %s, Expires: %s)",
+				item.Address, item.ID, item.Timeout, expiresAt.Format("2006-01-02 15:04:05"))
+		}
 	}
 	ds.addressCacheMu.Unlock()
 

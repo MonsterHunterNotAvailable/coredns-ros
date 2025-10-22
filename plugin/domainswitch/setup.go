@@ -2,6 +2,7 @@ package domainswitch
 
 import (
 	"path/filepath"
+	"strconv"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
@@ -143,6 +144,15 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				ds.RouterOSAutoTTL = c.Val() == "true"
+			case "routeros_ttl": // New config option
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				ttl, err := strconv.Atoi(c.Val())
+				if err != nil || ttl <= 0 {
+					return nil, c.Errf("routeros_ttl must be a positive integer (seconds)")
+				}
+				ds.RouterOSTTL = ttl
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
