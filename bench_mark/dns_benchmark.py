@@ -404,16 +404,16 @@ def main():
         epilog="""
 Examples:
   # Basic usage (test local CoreDNS)
-  python3 dns_benchmark.py -s 127.0.0.1 -p 1053 -n 1000
+  python3 dns_benchmark.py -s 127.0.0.1 -p 53 -n 1000
 
   # High concurrency test
-  python3 dns_benchmark.py -s 127.0.0.1 -p 1053 -n 5000 -c 500
+  python3 dns_benchmark.py -s 127.0.0.1 -p 53 -n 5000 -c 500
 
   # Test with custom ratio (70% China domains)
-  python3 dns_benchmark.py -s 127.0.0.1 -p 1053 -n 1000 -r 0.7
+  python3 dns_benchmark.py -s 127.0.0.1 -p 53 -n 1000 -r 0.7
 
   # Quick test with default domains
-  python3 dns_benchmark.py -s 127.0.0.1 -p 1053 -n 100 --no-load
+  python3 dns_benchmark.py -s 127.0.0.1 -p 53 -n 100 --no-load
 
   # Test production DNS
   python3 dns_benchmark.py -s 223.5.5.5 -n 2000 -c 200
@@ -422,8 +422,8 @@ Examples:
     
     parser.add_argument('-s', '--server', type=str, default='127.0.0.1',
                         help='DNS server address (default: 127.0.0.1)')
-    parser.add_argument('-p', '--port', type=int, default=1053,
-                        help='DNS server port (default: 1053)')
+    parser.add_argument('-p', '--port', type=int, default=53,
+                        help='DNS server port (default: 53)')
     parser.add_argument('-n', '--num', type=int, default=1000,
                         help='Number of queries (default: 1000)')
     parser.add_argument('-c', '--concurrency', type=int, default=100,
