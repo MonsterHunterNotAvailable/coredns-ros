@@ -35,11 +35,10 @@
         ##是否开启域名查询跟踪日志（记录：时间、客户端IP、查询域名、解析IP）
         trace_domain_log true
         
-        ##启用 RouterOS 自动 TTL 管理
+        ##routeos address lists ttl 开关以及ttl时长
         routeros_auto_ttl true
-        
-        ##RouterOS TTL 时间（秒）
         routeros_ttl 86400
+        ##routeos address lists ttl 开关以及ttl时长
     }
     
     # 关闭了 coredns 缓存功能

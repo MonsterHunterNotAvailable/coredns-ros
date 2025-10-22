@@ -169,10 +169,11 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 		clientIP := state.IP()
 		resolvedIPs := ds.extractIPsFromMsg(msg)
 		if len(resolvedIPs) > 0 {
-			logger.Infof("[TRACE] Time: %s | Client: %s | Domain: %s | Resolved: %s",
+			logger.Infof("[TRACE] Time: %s | Client: %s | Domain: %s | DNS Server: %s | Resolved: %s",
 				time.Now().Format("2006-01-02 15:04:05"),
 				clientIP,
 				qname,
+				upstream,
 				strings.Join(resolvedIPs, ", "))
 		}
 	}
