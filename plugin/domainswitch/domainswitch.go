@@ -61,7 +61,8 @@ type DomainSwitch struct {
 	httpServer       *http.Server // HTTP 服务器
 
 	// 日志配置
-	VerboseLog bool // 是否启用详细日志（域名解析、RouterOS 操作等）
+	VerboseLog     bool // 是否启用详细日志（域名解析、RouterOS 操作等）
+	TraceDomainLog bool // 是否启用域名查询跟踪日志（记录：时间、客户端IP、查询域名、解析IP）
 
 	// RouterOS Auto TTL 配置
 	RouterOSAutoTTL bool                                      // 是否启用 RouterOS 自动 TTL 管理
@@ -161,6 +162,19 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	if err != nil {
 		logger.Errorf("Failed to query upstream %s: %v", upstream, err)
 		return dns.RcodeServerFailure, err
+	}
+
+	// 记录域名查询跟踪日志
+	if ds.TraceDomainLog && msg.Rcode == dns.RcodeSuccess {
+		clientIP := state.IP()
+		resolvedIPs := ds.extractIPsFromMsg(msg)
+		if len(resolvedIPs) > 0 {
+			logger.Infof("[TRACE] Time: %s | Client: %s | Domain: %s | Resolved: %s",
+				time.Now().Format("2006-01-02 15:04:05"),
+				clientIP,
+				qname,
+				strings.Join(resolvedIPs, ", "))
+		}
 	}
 
 	// 检查解析结果是否包含黑名单 IP
@@ -564,6 +578,17 @@ func NewDomainSwitch(defaultUpstream string) *DomainSwitch {
 		RouterOSTTL:     86400,                                           // 默认 TTL 24 小时（86400 秒）
 		addressCache:    make(map[string]map[string]*RouterOSCacheEntry), // 初始化地址缓存
 	}
+}
+
+// extractIPsFromMsg 从 DNS 响应消息中提取所有 A 记录的 IP 地址
+func (ds *DomainSwitch) extractIPsFromMsg(msg *dns.Msg) []string {
+	var ips []string
+	for _, rr := range msg.Answer {
+		if a, ok := rr.(*dns.A); ok {
+			ips = append(ips, a.A.String())
+		}
+	}
+	return ips
 }
 
 // addToRouterOS 将解析出的 IP 添加到 RouterOS 地址列表

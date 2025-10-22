@@ -32,6 +32,9 @@
         ##是否开启详细日志
         verbose_log false
         
+        ##是否开启域名查询跟踪日志（记录：时间、客户端IP、查询域名、解析IP）
+        trace_domain_log true
+        
         ##启用 RouterOS 自动 TTL 管理
         routeros_auto_ttl true
         

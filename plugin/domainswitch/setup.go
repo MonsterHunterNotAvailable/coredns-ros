@@ -153,6 +153,11 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.Errf("routeros_ttl must be a positive integer (seconds)")
 				}
 				ds.RouterOSTTL = ttl
+			case "trace_domain_log": // 域名查询跟踪日志
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				ds.TraceDomainLog = c.Val() == "true"
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
