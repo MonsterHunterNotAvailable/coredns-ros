@@ -91,6 +91,10 @@ class GFWListParser:
         if rule.startswith('||'):
             rule = rule[2:]
         
+        # 处理以点开头的域名规则（如 .google.com）
+        if rule.startswith('.'):
+            rule = rule[1:]
+        
         # 处理 http:// 和 https:// 前缀
         if rule.startswith('http://'):
             rule = rule[7:]
