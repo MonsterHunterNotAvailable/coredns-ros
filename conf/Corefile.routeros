@@ -22,12 +22,17 @@
         routeros_host 192.168.50.137
         routeros_user admin
         routeros_password your_password
+        ##routeos address lists ttl 开关以及ttl时长
+        routeros_auto_ttl true
+        routeros_ttl 86400
+        # RouterOS 配置
 
         #hotreload域名文件
         #全部加载   curl -X POST http://localhost:8182/reload
         #单独加载   curl -X POST http://localhost:8182/reload/china-domains.txt
         hot_reload true
         reload_port 8182
+        #hotreload域名文件
 
         ##是否开启详细日志
         verbose_log false
@@ -35,10 +40,15 @@
         ##是否开启域名查询跟踪日志（记录：时间、客户端IP、查询域名、解析IP）
         trace_domain_log true
         
-        ##routeos address lists ttl 开关以及ttl时长
-        routeros_auto_ttl true
-        routeros_ttl 86400
-        ##routeos address lists ttl 开关以及ttl时长
+        ##日志文件配置（支持按天自动切分） 目录是相对于 conf 目录 默认会放在 conf/logs
+        ##如果想放到其他位置：
+          #log_file ../logs/coredns.log → coredns/logs/coredns.log（上级目录）
+          #log_file /var/log/coredns.log → /var/log/coredns.log（绝对路径）
+        log_file logs/coredns.log
+        ##是否同时输出到控制台（默认 true）
+        log_stdout true
+        
+
     }
     
     # 关闭了 coredns 缓存功能

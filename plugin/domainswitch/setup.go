@@ -62,6 +62,9 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 	// 创建插件实例
 	ds := NewDomainSwitch(defaultUpstream)
 
+	// 默认值：如果配置了 log_file，默认同时输出到控制台
+	ds.LogStdout = true
+
 	for c.Next() {
 		for c.NextBlock() {
 			switch c.Val() {
@@ -158,6 +161,21 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				ds.TraceDomainLog = c.Val() == "true"
+			case "log_file": // 日志文件路径
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				logPath := c.Val()
+				// 处理相对路径
+				if !filepath.IsAbs(logPath) {
+					logPath = filepath.Join(corefileDir, logPath)
+				}
+				ds.LogFile = logPath
+			case "log_stdout": // 是否同时输出到控制台
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				ds.LogStdout = c.Val() == "true"
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
@@ -178,6 +196,23 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 		if err := ds.LoadBlockIPList(blockIPFile); err != nil {
 			return nil, c.Errf("failed to load IP block list: %v", err)
 		}
+	}
+
+	// 初始化日志写入器
+	if ds.LogFile != "" {
+		// 如果没有显式设置 log_stdout，默认为 true（同时输出到控制台）
+		// 这个在解析配置时已经处理了，这里不需要再设置
+
+		logWriter, err := NewLogWriter(ds.LogFile, ds.LogStdout)
+		if err != nil {
+			return nil, c.Errf("failed to create log writer: %v", err)
+		}
+		ds.logWriter = logWriter
+		ds.pluginLogger = NewPluginLogger("domainswitch", logWriter)
+
+		logger.Infof("[Log] 日志输出配置: 文件=%s, 控制台=%v, 自动按天切分=启用", ds.LogFile, ds.LogStdout)
+	} else {
+		logger.Infof("[Log] 日志输出配置: 仅控制台输出")
 	}
 
 	// 启动 HTTP 重载服务器

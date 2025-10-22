@@ -61,8 +61,12 @@ type DomainSwitch struct {
 	httpServer       *http.Server // HTTP 服务器
 
 	// 日志配置
-	VerboseLog     bool // 是否启用详细日志（域名解析、RouterOS 操作等）
-	TraceDomainLog bool // 是否启用域名查询跟踪日志（记录：时间、客户端IP、查询域名、解析IP）
+	VerboseLog     bool          // 是否启用详细日志（域名解析、RouterOS 操作等）
+	TraceDomainLog bool          // 是否启用域名查询跟踪日志（记录：时间、客户端IP、查询域名、解析IP）
+	LogFile        string        // 日志文件路径
+	LogStdout      bool          // 是否同时输出到控制台（默认 true）
+	logWriter      *LogWriter    // 日志写入器
+	pluginLogger   *PluginLogger // 插件日志记录器
 
 	// RouterOS Auto TTL 配置
 	RouterOSAutoTTL bool                                      // 是否启用 RouterOS 自动 TTL 管理
@@ -128,7 +132,7 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	// 过滤 IPv6 (AAAA) 查询，直接返回空响应
 	if state.QType() == dns.TypeAAAA {
 		if ds.VerboseLog {
-			logger.Infof("[FILTER] Blocked IPv6 query for %s", qname)
+			ds.Infof("[FILTER] Blocked IPv6 query for %s", qname)
 		}
 
 		// 构造空响应（NODATA）
@@ -139,7 +143,7 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 
 		err := w.WriteMsg(m)
 		if err != nil {
-			logger.Errorf("Failed to write AAAA block response: %v", err)
+			ds.Errorf("Failed to write AAAA block response: %v", err)
 			return dns.RcodeServerFailure, err
 		}
 		return dns.RcodeSuccess, nil
@@ -154,13 +158,13 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 		routeType = listConfig.RouterOSList
 	}
 	if ds.VerboseLog {
-		logger.Infof("[%s] %s -> %s", routeType, qname, upstream)
+		ds.Infof("[%s] %s -> %s", routeType, qname, upstream)
 	}
 
 	// 转发 DNS 请求
 	msg, _, err := ds.client.Exchange(r, net.JoinHostPort(upstream, "53"))
 	if err != nil {
-		logger.Errorf("Failed to query upstream %s: %v", upstream, err)
+		ds.Errorf("Failed to query upstream %s: %v", upstream, err)
 		return dns.RcodeServerFailure, err
 	}
 
@@ -169,7 +173,7 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 		clientIP := state.IP()
 		resolvedIPs := ds.extractIPsFromMsg(msg)
 		if len(resolvedIPs) > 0 {
-			logger.Infof("[TRACE] Time: %s | Client: %s | Domain: %s | DNS Server: %s | Resolved: %s",
+			ds.Infof("[TRACE] Time: %s | Client: %s | Domain: %s | DNS Server: %s | Resolved: %s",
 				time.Now().Format("2006-01-02 15:04:05"),
 				clientIP,
 				qname,
@@ -183,7 +187,7 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	if ds.BlockIPFile != "" && msg.Rcode == dns.RcodeSuccess {
 		if ds.containsBlockedIP(msg) {
 			if ds.VerboseLog {
-				logger.Infof("[BLOCKED] %s contains blocked IP, returning DNS result but not adding to RouterOS", qname)
+				ds.Infof("[BLOCKED] %s contains blocked IP, returning DNS result but not adding to RouterOS", qname)
 			}
 			isBlocked = true
 		}
@@ -197,7 +201,7 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	// 写入响应
 	err = w.WriteMsg(msg)
 	if err != nil {
-		logger.Errorf("Failed to write response: %v", err)
+		ds.Errorf("Failed to write response: %v", err)
 		return dns.RcodeServerFailure, err
 	}
 
@@ -361,11 +365,11 @@ func (ds *DomainSwitch) startHTTPReloadServer() {
 		Handler: mux,
 	}
 
-	logger.Infof("Starting HTTP reload server on port %s", ds.ReloadHTTPPort)
+	ds.Infof("Starting HTTP reload server on port %s", ds.ReloadHTTPPort)
 
 	go func() {
 		if err := ds.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Errorf("HTTP reload server error: %v", err)
+			ds.Errorf("HTTP reload server error: %v", err)
 		}
 	}()
 }
@@ -377,7 +381,7 @@ func (ds *DomainSwitch) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Infof("[HTTP Reload] Reloading all domain lists...")
+	ds.Infof("[HTTP Reload] Reloading all domain lists...")
 
 	results := make(map[string]string)
 
@@ -389,10 +393,10 @@ func (ds *DomainSwitch) handleReload(w http.ResponseWriter, r *http.Request) {
 	// 重载所有域名列表
 	for _, listConfig := range lists {
 		if err := listConfig.LoadList(); err != nil {
-			logger.Errorf("[HTTP Reload] Failed to reload %s: %v", listConfig.File, err)
+			ds.Errorf("[HTTP Reload] Failed to reload %s: %v", listConfig.File, err)
 			results[listConfig.File] = fmt.Sprintf("Error: %v", err)
 		} else {
-			logger.Infof("[HTTP Reload] Successfully reloaded %s", listConfig.File)
+			ds.Infof("[HTTP Reload] Successfully reloaded %s", listConfig.File)
 			results[listConfig.File] = "Success"
 		}
 	}
@@ -400,10 +404,10 @@ func (ds *DomainSwitch) handleReload(w http.ResponseWriter, r *http.Request) {
 	// 重载 IP 黑名单
 	if ds.BlockIPFile != "" {
 		if err := ds.LoadBlockIPList(ds.BlockIPFile); err != nil {
-			logger.Errorf("[HTTP Reload] Failed to reload IP block list: %v", err)
+			ds.Errorf("[HTTP Reload] Failed to reload IP block list: %v", err)
 			results[ds.BlockIPFile] = fmt.Sprintf("Error: %v", err)
 		} else {
-			logger.Infof("[HTTP Reload] Successfully reloaded IP block list")
+			ds.Infof("[HTTP Reload] Successfully reloaded IP block list")
 			results[ds.BlockIPFile] = "Success"
 		}
 	}
@@ -429,7 +433,7 @@ func (ds *DomainSwitch) handleReloadSpecific(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	logger.Infof("[HTTP Reload] Reloading specific file: %s", filename)
+	ds.Infof("[HTTP Reload] Reloading specific file: %s", filename)
 
 	ds.mu.RLock()
 	var targetConfig *DomainListConfig
@@ -447,12 +451,12 @@ func (ds *DomainSwitch) handleReloadSpecific(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := targetConfig.LoadList(); err != nil {
-		logger.Errorf("[HTTP Reload] Failed to reload %s: %v", filename, err)
+		ds.Errorf("[HTTP Reload] Failed to reload %s: %v", filename, err)
 		http.Error(w, fmt.Sprintf("Reload failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	logger.Infof("[HTTP Reload] Successfully reloaded %s", filename)
+	ds.Infof("[HTTP Reload] Successfully reloaded %s", filename)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -474,15 +478,15 @@ func (ds *DomainSwitch) handleReloadIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Infof("[HTTP Reload] Reloading IP block list: %s", ds.BlockIPFile)
+	ds.Infof("[HTTP Reload] Reloading IP block list: %s", ds.BlockIPFile)
 
 	if err := ds.LoadBlockIPList(ds.BlockIPFile); err != nil {
-		logger.Errorf("[HTTP Reload] Failed to reload IP block list: %v", err)
+		ds.Errorf("[HTTP Reload] Failed to reload IP block list: %v", err)
 		http.Error(w, fmt.Sprintf("Reload failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	logger.Infof("[HTTP Reload] Successfully reloaded IP block list")
+	ds.Infof("[HTTP Reload] Successfully reloaded IP block list")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -542,9 +546,9 @@ func (ds *DomainSwitch) stopHTTPReloadServer() {
 		defer cancel()
 
 		if err := ds.httpServer.Shutdown(ctx); err != nil {
-			logger.Errorf("HTTP reload server shutdown error: %v", err)
+			ds.Errorf("HTTP reload server shutdown error: %v", err)
 		} else {
-			logger.Infof("HTTP reload server stopped")
+			ds.Infof("HTTP reload server stopped")
 		}
 	}
 }
@@ -614,10 +618,10 @@ func (ds *DomainSwitch) addToRouterOS(domain string, msg *dns.Msg, addressList s
 	for _, ip := range ips {
 		err := ds.addIPToRouterOS(ip, domain, addressList)
 		if err != nil {
-			logger.Warningf("Failed to add %s (%s) to RouterOS: %v", ip, domain, err)
+			ds.Warningf("Failed to add %s (%s) to RouterOS: %v", ip, domain, err)
 		} else {
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS] Added %s (%s) to address-list %s", ip, domain, addressList)
+				ds.Infof("[RouterOS] Added %s (%s) to address-list %s", ip, domain, addressList)
 			}
 		}
 	}
@@ -649,11 +653,11 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 			isExpired = now.After(cacheEntry.ExpiresAt)
 			if ds.VerboseLog {
 				if isExpired {
-					logger.Infof("[RouterOS TTL] IP %s in list %s has expired (expired at: %s, now: %s)",
+					ds.Infof("[RouterOS TTL] IP %s in list %s has expired (expired at: %s, now: %s)",
 						ip, addressList, cacheEntry.ExpiresAt.Format("15:04:05"), now.Format("15:04:05"))
 				} else {
 					remainingTime := cacheEntry.ExpiresAt.Sub(now)
-					logger.Infof("[RouterOS TTL] IP %s in list %s still valid (remaining: %s)",
+					ds.Infof("[RouterOS TTL] IP %s in list %s still valid (remaining: %s)",
 						ip, addressList, remainingTime.String())
 				}
 			}
@@ -670,7 +674,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 				"timeout": ttlString,
 			}
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Add] Adding new IP %s to list %s (TTL: %s)", ip, addressList, ttlString)
+				ds.Infof("[RouterOS Add] Adding new IP %s to list %s (TTL: %s)", ip, addressList, ttlString)
 			}
 
 			// 预先占位缓存（使用临时 ID "pending"），防止并发冲突
@@ -689,7 +693,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 			// 先尝试用 set 更新（RouterOS 可能还没删除），如果失败再用 add
 			if cacheEntry.ID == "pending" {
 				if ds.VerboseLog {
-					logger.Infof("[RouterOS Skip] IP %s is being added, skip expired update (ID: pending)", ip)
+					ds.Infof("[RouterOS Skip] IP %s is being added, skip expired update (ID: pending)", ip)
 				}
 				return nil // 跳过，等待第一次添加完成
 			}
@@ -702,7 +706,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 				"timeout": ttlString,
 			}
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Update] Attempting to refresh expired IP %s in list %s (ID: %s, TTL: %s)",
+				ds.Infof("[RouterOS Update] Attempting to refresh expired IP %s in list %s (ID: %s, TTL: %s)",
 					ip, addressList, cacheEntry.ID, ttlString)
 			}
 
@@ -718,7 +722,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 			// 但如果 ID 还是 "pending"，说明第一次添加正在进行中，跳过本次更新
 			if cacheEntry.ID == "pending" {
 				if ds.VerboseLog {
-					logger.Infof("[RouterOS Skip] IP %s is being added, skip update (ID: pending)", ip)
+					ds.Infof("[RouterOS Skip] IP %s is being added, skip update (ID: pending)", ip)
 				}
 				return nil // 跳过，等待第一次添加完成
 			}
@@ -731,7 +735,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 				"timeout": ttlString,
 			}
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Update] Refreshing TTL for IP %s in list %s (ID: %s, TTL: %s)",
+				ds.Infof("[RouterOS Update] Refreshing TTL for IP %s in list %s (ID: %s, TTL: %s)",
 					ip, addressList, cacheEntry.ID, ttlString)
 			}
 
@@ -761,11 +765,11 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 
 	// 记录 POST 请求信息
 	if ds.VerboseLog {
-		logger.Infof("[RouterOS POST] URL: %s", url)
-		logger.Infof("[RouterOS POST] Method: POST")
-		logger.Infof("[RouterOS POST] Headers: Content-Type=application/json, Authorization=Basic ***")
-		logger.Infof("[RouterOS POST] Body: %s", string(jsonData))
-		logger.Infof("[RouterOS POST] Target: %s (User: %s)", ds.RouterOSHost, ds.RouterOSUser)
+		ds.Infof("[RouterOS POST] URL: %s", url)
+		ds.Infof("[RouterOS POST] Method: POST")
+		ds.Infof("[RouterOS POST] Headers: Content-Type=application/json, Authorization=Basic ***")
+		ds.Infof("[RouterOS POST] Body: %s", string(jsonData))
+		ds.Infof("[RouterOS POST] Target: %s (User: %s)", ds.RouterOSHost, ds.RouterOSUser)
 	}
 
 	// 创建 HTTP 请求
@@ -780,11 +784,11 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 
 	// 发送请求
 	if ds.VerboseLog {
-		logger.Infof("[RouterOS POST] Sending request...")
+		ds.Infof("[RouterOS POST] Sending request...")
 	}
 	resp, err := ds.httpClient.Do(req)
 	if err != nil {
-		logger.Errorf("[RouterOS POST] Request failed: %v", err)
+		ds.Errorf("[RouterOS POST] Request failed: %v", err)
 		return fmt.Errorf("failed to send request: %v", err)
 	}
 	defer resp.Body.Close()
@@ -794,9 +798,9 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 
 	// 记录响应信息
 	if ds.VerboseLog {
-		logger.Infof("[RouterOS POST] Response Status: %d %s", resp.StatusCode, resp.Status)
-		logger.Infof("[RouterOS POST] Response Headers: %v", resp.Header)
-		logger.Infof("[RouterOS POST] Response Body: %s", string(body))
+		ds.Infof("[RouterOS POST] Response Status: %d %s", resp.StatusCode, resp.Status)
+		ds.Infof("[RouterOS POST] Response Headers: %v", resp.Header)
+		ds.Infof("[RouterOS POST] Response Body: %s", string(body))
 	}
 
 	// 检查响应状态
@@ -804,7 +808,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 		// 特殊处理：如果是 set 操作失败（404），说明 RouterOS 已经删除了该记录，尝试用 add 重新添加
 		if ds.RouterOSAutoTTL && strings.Contains(url, "/set") && resp.StatusCode == http.StatusNotFound {
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Retry] Set failed (404), entry was deleted by RouterOS. Retrying with add for IP %s", ip)
+				ds.Infof("[RouterOS Retry] Set failed (404), entry was deleted by RouterOS. Retrying with add for IP %s", ip)
 			}
 
 			// 重新构造 add 请求
@@ -839,7 +843,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 			addBody, _ := io.ReadAll(addResp.Body)
 
 			if addResp.StatusCode != http.StatusOK && addResp.StatusCode != http.StatusCreated {
-				logger.Errorf("[RouterOS Retry] Add also failed - Status: %d, Body: %s", addResp.StatusCode, string(addBody))
+				ds.Errorf("[RouterOS Retry] Add also failed - Status: %d, Body: %s", addResp.StatusCode, string(addBody))
 				return fmt.Errorf("RouterOS retry add returned status %d: %s", addResp.StatusCode, string(addBody))
 			}
 
@@ -854,7 +858,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 					if ds.addressCache[addressList][ip] != nil {
 						ds.addressCache[addressList][ip].ID = ret
 						if ds.VerboseLog {
-							logger.Infof("[CoreDNS Cache] Retry add successful, updated IP %s ID to %s", ip, ret)
+							ds.Infof("[CoreDNS Cache] Retry add successful, updated IP %s ID to %s", ip, ret)
 						}
 					}
 					ds.addressCacheMu.Unlock()
@@ -862,17 +866,17 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 			}
 
 			if ds.VerboseLog {
-				logger.Infof("[RouterOS Retry] Successfully added IP %s to list %s", ip, addressList)
+				ds.Infof("[RouterOS Retry] Successfully added IP %s to list %s", ip, addressList)
 			}
 			return nil
 		}
 
-		logger.Errorf("[RouterOS POST] API Error - Status: %d, Body: %s", resp.StatusCode, string(body))
+		ds.Errorf("[RouterOS POST] API Error - Status: %d, Body: %s", resp.StatusCode, string(body))
 		return fmt.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	if ds.VerboseLog {
-		logger.Infof("[RouterOS POST] Success - IP %s added/updated to list %s", ip, addressList)
+		ds.Infof("[RouterOS POST] Success - IP %s added/updated to list %s", ip, addressList)
 	}
 
 	// 如果启用 RouterOS Auto TTL 且是添加操作，需要更新缓存中的真实 ID
@@ -885,7 +889,7 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment, addressList string) error {
 				if existingEntry := ds.addressCache[addressList][ip]; existingEntry != nil {
 					existingEntry.ID = ret // 更新临时 ID 为真实 ID
 					if ds.VerboseLog {
-						logger.Infof("[CoreDNS Cache] Updated IP %s ID from pending to %s", ip, ret)
+						ds.Infof("[CoreDNS Cache] Updated IP %s ID from pending to %s", ip, ret)
 					}
 				}
 				ds.addressCacheMu.Unlock()
@@ -902,7 +906,7 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 		return nil
 	}
 
-	logger.Infof("Loading RouterOS address list: %s", listName)
+	ds.Infof("Loading RouterOS address list: %s", listName)
 
 	// RouterOS REST API URL for querying address list
 	url := fmt.Sprintf("http://%s/rest/ip/firewall/address-list?list=%s", ds.RouterOSHost, listName)
@@ -918,13 +922,13 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 	req.Header.Set("Accept", "application/json")
 
 	if ds.VerboseLog {
-		logger.Infof("[RouterOS Query] Loading address list: %s", listName)
+		ds.Infof("[RouterOS Query] Loading address list: %s", listName)
 	}
 
 	// 发送请求
 	resp, err := ds.httpClient.Do(req)
 	if err != nil {
-		logger.Errorf("Failed to query RouterOS address list %s: %v", listName, err)
+		ds.Errorf("Failed to query RouterOS address list %s: %v", listName, err)
 		return fmt.Errorf("failed to query RouterOS: %v", err)
 	}
 	defer resp.Body.Close()
@@ -936,7 +940,7 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		logger.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
+		ds.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
 		return fmt.Errorf("RouterOS API returned status %d", resp.StatusCode)
 	}
 
@@ -963,13 +967,13 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 			ExpiresAt: expiresAt,
 		}
 		if ds.VerboseLog {
-			logger.Infof("[RouterOS Cache] Loaded %s (ID: %s, Timeout: %s, Expires: %s)",
+			ds.Infof("[RouterOS Cache] Loaded %s (ID: %s, Timeout: %s, Expires: %s)",
 				item.Address, item.ID, item.Timeout, expiresAt.Format("2006-01-02 15:04:05"))
 		}
 	}
 	ds.addressCacheMu.Unlock()
 
-	logger.Infof("Loaded %d existing addresses from RouterOS list: %s", len(items), listName)
+	ds.Infof("Loaded %d existing addresses from RouterOS list: %s", len(items), listName)
 	return nil
 }
 
@@ -979,12 +983,12 @@ func (ds *DomainSwitch) initializeRouterOSCache() error {
 		return nil
 	}
 
-	logger.Infof("Initializing RouterOS address cache...")
+	ds.Infof("Initializing RouterOS address cache...")
 
 	// 为每个域名列表加载现有地址
 	for _, listConfig := range ds.DomainLists {
 		if err := ds.loadRouterOSAddressList(listConfig.RouterOSList); err != nil {
-			logger.Warningf("Failed to load RouterOS address list %s: %v", listConfig.RouterOSList, err)
+			ds.Warningf("Failed to load RouterOS address list %s: %v", listConfig.RouterOSList, err)
 		}
 	}
 
@@ -993,7 +997,7 @@ func (ds *DomainSwitch) initializeRouterOSCache() error {
 
 // LoadBlockIPList 从文件加载 IP 黑名单（CIDR 格式）
 func (ds *DomainSwitch) LoadBlockIPList(file string) error {
-	logger.Infof("Loading IP block list from: %s", file)
+	ds.Infof("Loading IP block list from: %s", file)
 
 	f, err := os.Open(file)
 	if err != nil {
@@ -1033,7 +1037,7 @@ func (ds *DomainSwitch) LoadBlockIPList(file string) error {
 		}
 
 		if err != nil {
-			logger.Warningf("Invalid IP/CIDR format: %s, error: %v", line, err)
+			ds.Warningf("Invalid IP/CIDR format: %s, error: %v", line, err)
 			continue
 		}
 
@@ -1045,7 +1049,7 @@ func (ds *DomainSwitch) LoadBlockIPList(file string) error {
 		return fmt.Errorf("error reading IP block list: %v", err)
 	}
 
-	logger.Infof("Loaded %d IP blocks from %s", count, file)
+	ds.Infof("Loaded %d IP blocks from %s", count, file)
 	return nil
 }
 
@@ -1069,7 +1073,7 @@ func (ds *DomainSwitch) containsBlockedIP(msg *dns.Msg) bool {
 			ip := a.A
 			if ds.isIPBlocked(ip) {
 				if ds.VerboseLog {
-					logger.Infof("[BLOCKED] IP %s is in block list", ip.String())
+					ds.Infof("[BLOCKED] IP %s is in block list", ip.String())
 				}
 				return true
 			}
@@ -1079,7 +1083,7 @@ func (ds *DomainSwitch) containsBlockedIP(msg *dns.Msg) bool {
 			ip := aaaa.AAAA
 			if ds.isIPBlocked(ip) {
 				if ds.VerboseLog {
-					logger.Infof("[BLOCKED] IPv6 %s is in block list", ip.String())
+					ds.Infof("[BLOCKED] IPv6 %s is in block list", ip.String())
 				}
 				return true
 			}
@@ -1097,4 +1101,50 @@ func (ds *DomainSwitch) isIPBlocked(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// 日志辅助方法
+// Infof 输出 INFO 级别日志
+func (ds *DomainSwitch) Infof(format string, v ...interface{}) {
+	if ds.pluginLogger != nil {
+		ds.pluginLogger.Infof(format, v...)
+	} else {
+		logger.Infof(format, v...)
+	}
+}
+
+// Info 输出 INFO 级别日志
+func (ds *DomainSwitch) Info(v ...interface{}) {
+	if ds.pluginLogger != nil {
+		ds.pluginLogger.Info(v...)
+	} else {
+		logger.Info(v...)
+	}
+}
+
+// Warningf 输出 WARNING 级别日志
+func (ds *DomainSwitch) Warningf(format string, v ...interface{}) {
+	if ds.pluginLogger != nil {
+		ds.pluginLogger.Warningf(format, v...)
+	} else {
+		logger.Warningf(format, v...)
+	}
+}
+
+// Errorf 输出 ERROR 级别日志
+func (ds *DomainSwitch) Errorf(format string, v ...interface{}) {
+	if ds.pluginLogger != nil {
+		ds.pluginLogger.Errorf(format, v...)
+	} else {
+		logger.Errorf(format, v...)
+	}
+}
+
+// Debugf 输出 DEBUG 级别日志
+func (ds *DomainSwitch) Debugf(format string, v ...interface{}) {
+	if ds.pluginLogger != nil {
+		ds.pluginLogger.Debugf(format, v...)
+	} else {
+		logger.Debugf(format, v...)
+	}
 }
