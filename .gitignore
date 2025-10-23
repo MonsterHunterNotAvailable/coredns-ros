@@ -7,3 +7,6 @@ release/
 vendor/
 /conf/Corefile.test
 /test_py/
+/conf/.idea/conf.iml
+/conf/logs/
+/conf/.idea/
