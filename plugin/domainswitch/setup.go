@@ -32,13 +32,12 @@ func setup(c *caddy.Controller) error {
 //
 //	domainswitch {
 //	    default 8.8.8.8
-//	    list china-domains.txt 223.5.5.5 china_ip
-//	    list gfw_list.txt 4.4.4.4 gfw_ip
+//	    list china-domains.txt 223.5.5.5 china_ip 86400
+//	    list gfw_list.txt 4.4.4.4 gfw_ip 0
 //	    block_ip block_ip.txt
 //	    hot_reload true
 //	    reload_port 8182
 //	    verbose_log false
-//	    routeros_auto_ttl true
 //	    routeros_enable true
 //	    routeros_host 172.16.40.248
 //	    routeros_user admin
@@ -74,10 +73,10 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 				}
 				ds.DefaultUpstream = c.Val()
 			case "list":
-				// 解析格式: list filename dnsserver routeros_list
+				// 解析格式: list filename dnsserver routeros_list routeros_ttl
 				args := c.RemainingArgs()
-				if len(args) != 3 {
-					return nil, c.Errf("list requires 3 arguments: filename dnsserver routeros_list")
+				if len(args) != 4 {
+					return nil, c.Errf("list requires 4 arguments: filename dnsserver routeros_list routeros_ttl")
 				}
 
 				// 处理相对路径：相对于 Corefile 的路径
@@ -86,10 +85,17 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					filename = filepath.Join(corefileDir, filename)
 				}
 
+				// 解析 TTL
+				ttl, err := strconv.Atoi(args[3])
+				if err != nil || ttl < 0 {
+					return nil, c.Errf("routeros_ttl must be a non-negative integer (seconds), 0 means no timeout")
+				}
+
 				listConfig := &DomainListConfig{
 					File:         filename,
 					DNSServer:    args[1],
 					RouterOSList: args[2],
+					RouterOSTTL:  ttl,
 				}
 
 				// 加载域名列表
@@ -142,20 +148,6 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 					return nil, c.ArgErr()
 				}
 				ds.VerboseLog = c.Val() == "true"
-			case "routeros_auto_ttl":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				ds.RouterOSAutoTTL = c.Val() == "true"
-			case "routeros_ttl": // New config option
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				ttl, err := strconv.Atoi(c.Val())
-				if err != nil || ttl <= 0 {
-					return nil, c.Errf("routeros_ttl must be a positive integer (seconds)")
-				}
-				ds.RouterOSTTL = ttl
 			case "trace_domain_log": // 域名查询跟踪日志
 				if !c.NextArg() {
 					return nil, c.ArgErr()
@@ -218,8 +210,8 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 	// 启动 HTTP 重载服务器
 	ds.startHTTPReloadServer()
 
-	// 如果启用 RouterOS Auto TTL，初始化 RouterOS 地址缓存
-	if ds.RouterOSAutoTTL && ds.RouterOSEnabled {
+	// 如果启用 RouterOS，初始化 RouterOS 地址缓存（只针对配置了 TTL 的列表）
+	if ds.RouterOSEnabled {
 		if err := ds.initializeRouterOSCache(); err != nil {
 			logger.Warningf("Failed to initialize RouterOS cache: %v", err)
 		}

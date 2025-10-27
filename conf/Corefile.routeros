@@ -10,9 +10,9 @@
         #默认 dns 服务器
         default 8.8.8.8
         
-        #       域名清单文件名            对应的dns        address_list
-        list    china_domains.txt       223.5.5.5       china_ip
-        list    gfwlist_domains.txt     8.8.4.4         gfw_ip
+        #       域名清单文件名            对应的dns        ros_address_list     ros_address_ttl
+        list    china_domains.txt       223.5.5.5       china_ip             86400
+        list    gfwlist_domains.txt     8.8.4.4         gfw_ip               0
 
         #如果查询返回block_ip则不会添加到 ros 的address lists 中
         block_ip block_ip.txt
@@ -21,11 +21,8 @@
         routeros_enable true
         routeros_host 192.168.50.137
         routeros_user admin
-        routeros_password your_password
-        ##routeos address lists ttl 开关以及ttl时长
-        routeros_auto_ttl true
-        routeros_ttl 86400
-        # RouterOS 配置
+        routeros_password password
+     
 
         #hotreload域名文件
         #全部加载   curl -X POST http://localhost:8182/reload
@@ -52,7 +49,7 @@
     }
     
     # 关闭了 coredns 缓存功能
-    # cache 30
+    #cache 30
     
     # 只记录错误级别的访问日志
     log {
