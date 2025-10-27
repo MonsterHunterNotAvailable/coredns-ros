@@ -35,13 +35,10 @@ func setup(c *caddy.Controller) error {
 //	    list china-domains.txt 223.5.5.5 china_ip 86400
 //	    list gfw_list.txt 4.4.4.4 gfw_ip 0
 //	    block_ip block_ip.txt
-//	    hot_reload true
-//	    reload_port 8182
+//	    routeros_login true 192.168.50.137:80 admin password
+//	    hot_reload true 8182
 //	    verbose_log false
-//	    routeros_enable true
-//	    routeros_host 172.16.40.248
-//	    routeros_user admin
-//	    routeros_password your_routeros_password
+//	    trace_domain true true logs/coredns.log
 //	}
 func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 	var (
@@ -113,61 +110,43 @@ func parseDomainSwitch(c *caddy.Controller) (*DomainSwitch, error) {
 				if blockIPFile != "" && !filepath.IsAbs(blockIPFile) {
 					blockIPFile = filepath.Join(corefileDir, blockIPFile)
 				}
-			case "routeros_enable":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
+			case "routeros_login":
+				// 解析格式: routeros_login enabled host:port user password
+				args := c.RemainingArgs()
+				if len(args) != 4 {
+					return nil, c.Errf("routeros_login requires 4 arguments: enabled host:port user password")
 				}
-				rosEnabled = c.Val() == "true"
-			case "routeros_host":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				rosHost = c.Val()
-			case "routeros_user":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				rosUser = c.Val()
-			case "routeros_password":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				rosPassword = c.Val()
+				rosEnabled = args[0] == "true"
+				rosHost = args[1]
+				rosUser = args[2]
+				rosPassword = args[3]
 			case "hot_reload":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
+				// 解析格式: hot_reload enabled port
+				args := c.RemainingArgs()
+				if len(args) != 2 {
+					return nil, c.Errf("hot_reload requires 2 arguments: enabled port")
 				}
-				ds.HotReloadEnabled = c.Val() == "true"
-			case "reload_port":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				ds.ReloadHTTPPort = c.Val()
+				ds.HotReloadEnabled = args[0] == "true"
+				ds.ReloadHTTPPort = args[1]
 			case "verbose_log":
 				if !c.NextArg() {
 					return nil, c.ArgErr()
 				}
 				ds.VerboseLog = c.Val() == "true"
-			case "trace_domain_log": // 域名查询跟踪日志
-				if !c.NextArg() {
-					return nil, c.ArgErr()
+			case "trace_domain":
+				// 解析格式: trace_domain trace_enabled stdout_enabled log_file
+				args := c.RemainingArgs()
+				if len(args) != 3 {
+					return nil, c.Errf("trace_domain requires 3 arguments: trace_enabled stdout_enabled log_file")
 				}
-				ds.TraceDomainLog = c.Val() == "true"
-			case "log_file": // 日志文件路径
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				logPath := c.Val()
+				ds.TraceDomainLog = args[0] == "true"
+				ds.LogStdout = args[1] == "true"
+				logPath := args[2]
 				// 处理相对路径
 				if !filepath.IsAbs(logPath) {
 					logPath = filepath.Join(corefileDir, logPath)
 				}
 				ds.LogFile = logPath
-			case "log_stdout": // 是否同时输出到控制台
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				ds.LogStdout = c.Val() == "true"
 			default:
 				return nil, c.Errf("unknown property '%s'", c.Val())
 			}
