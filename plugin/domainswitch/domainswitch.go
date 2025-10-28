@@ -128,26 +128,6 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	state := request.Request{W: w, Req: r}
 	qname := strings.ToLower(strings.TrimSuffix(state.Name(), "."))
 
-	// 过滤 IPv6 (AAAA) 查询，直接返回空响应
-	if state.QType() == dns.TypeAAAA {
-		if ds.VerboseLog {
-			ds.Infof("[FILTER] Blocked IPv6 query for %s", qname)
-		}
-
-		// 构造空响应（NODATA）
-		m := new(dns.Msg)
-		m.SetReply(r)
-		m.Authoritative = true
-		m.RecursionAvailable = true
-
-		err := w.WriteMsg(m)
-		if err != nil {
-			ds.Errorf("Failed to write AAAA block response: %v", err)
-			return dns.RcodeServerFailure, err
-		}
-		return dns.RcodeSuccess, nil
-	}
-
 	// 检查域名在哪个列表中
 	upstream, listConfig := ds.getUpstream(qname)
 
