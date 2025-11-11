@@ -123,6 +123,24 @@ func parseRouterOSTimeout(timeout string) time.Time {
 // Name 返回插件名称
 func (ds *DomainSwitch) Name() string { return "domainswitch" }
 
+// setEDNS0 为 DNS 请求添加 EDNS0 支持，增加 UDP buffer size
+// 参考 CoreDNS forward 插件的实现，确保 UDP buffer size 足够大以避免溢出错误
+func (ds *DomainSwitch) setEDNS0(req *dns.Msg) {
+	// 检查是否已经有 EDNS0 OPT 记录
+	if opt := req.IsEdns0(); opt != nil {
+		// 如果已有 EDNS0，确保 UDP buffer size 足够大（至少 4096 字节）
+		// 这可以避免 "dns: overflow unpacking uint32" 错误
+		if opt.UDPSize() < 4096 {
+			opt.SetUDPSize(4096)
+		}
+		return
+	}
+
+	// 如果客户端没有 EDNS0，为请求添加 EDNS0 支持
+	// 设置 4096 字节的 UDP buffer size，这是现代 DNS 的标准配置
+	req.SetEdns0(4096, false)
+}
+
 // ServeDNS 处理 DNS 查询
 func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
@@ -140,11 +158,73 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 		ds.Infof("[%s] %s -> %s", routeType, qname, upstream)
 	}
 
+	// 添加 EDNS0 支持，增加 UDP buffer size
+	req := r.Copy()
+	ds.setEDNS0(req)
+
 	// 转发 DNS 请求
-	msg, _, err := ds.client.Exchange(r, net.JoinHostPort(upstream, "53"))
+	msg, rtt, err := ds.client.Exchange(req, net.JoinHostPort(upstream, "53"))
 	if err != nil {
-		ds.Errorf("Failed to query upstream %s: %v", upstream, err)
+		// 增强错误日志：记录查询详情和原始响应
+		ds.Errorf("[ERROR] Failed to query upstream %s for domain %s (Type: %s, Route: %s): %v",
+			upstream, qname, dns.TypeToString[r.Question[0].Qtype], routeType, err)
+
+		// 如果有响应消息，打印原始响应信息
+		if msg != nil {
+			ds.Errorf("[ERROR] Raw DNS response received despite error:")
+			ds.Errorf("[ERROR]   - Rcode: %s (%d)", dns.RcodeToString[msg.Rcode], msg.Rcode)
+			ds.Errorf("[ERROR]   - Questions: %d, Answers: %d, Authority: %d, Additional: %d",
+				len(msg.Question), len(msg.Answer), len(msg.Ns), len(msg.Extra))
+
+			// 计算响应包大小
+			if packed, packErr := msg.Pack(); packErr == nil {
+				ds.Errorf("[ERROR]   - Response Size: %d bytes", len(packed))
+			}
+
+			// 打印完整的响应消息（用于调试）
+			if ds.VerboseLog {
+				ds.Errorf("[ERROR] Full DNS Response:\n%s", msg.String())
+			}
+
+			// 打印每个 Answer 记录
+			for i, ans := range msg.Answer {
+				ds.Errorf("[ERROR]   - Answer[%d]: %s", i, ans.String())
+			}
+
+			// 打印 Authority 和 Additional 记录（可能包含导致溢出的数据）
+			for i, ns := range msg.Ns {
+				ds.Errorf("[ERROR]   - Authority[%d]: %s", i, ns.String())
+			}
+			for i, extra := range msg.Extra {
+				ds.Errorf("[ERROR]   - Additional[%d]: %s", i, extra.String())
+			}
+		} else {
+			ds.Errorf("[ERROR] No response message received (msg is nil)")
+		}
+
+		// 打印请求详情
+		ds.Errorf("[ERROR] Original DNS Request:")
+		ds.Errorf("[ERROR]   - Domain: %s", qname)
+		ds.Errorf("[ERROR]   - Query Type: %s (%d)", dns.TypeToString[r.Question[0].Qtype], r.Question[0].Qtype)
+		ds.Errorf("[ERROR]   - Query Class: %s", dns.ClassToString[r.Question[0].Qclass])
+		ds.Errorf("[ERROR]   - Upstream Server: %s:53", upstream)
+		ds.Errorf("[ERROR]   - EDNS0 Enabled: %v", req.IsEdns0() != nil)
+		if opt := req.IsEdns0(); opt != nil {
+			ds.Errorf("[ERROR]   - EDNS0 UDP Size: %d bytes", opt.UDPSize())
+		}
+
 		return dns.RcodeServerFailure, err
+	}
+
+	// 在详细日志模式下，记录成功的响应统计信息
+	if ds.VerboseLog {
+		if packed, packErr := msg.Pack(); packErr == nil {
+			responseSize := len(packed)
+			if responseSize > 512 {
+				ds.Infof("[DNS Response] Domain: %s, Size: %d bytes (>512, EDNS0 needed), RTT: %v, Answers: %d",
+					qname, responseSize, rtt, len(msg.Answer))
+			}
+		}
 	}
 
 	// 记录域名查询跟踪日志
