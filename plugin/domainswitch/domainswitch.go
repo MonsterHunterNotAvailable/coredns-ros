@@ -1047,6 +1047,108 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 	return nil
 }
 
+// clearRouterOSAddressList 清空 RouterOS 指定地址列表的所有条目
+func (ds *DomainSwitch) clearRouterOSAddressList(listName string) error {
+	if !ds.RouterOSEnabled {
+		return nil
+	}
+
+	ds.Infof("Clearing RouterOS address list: %s", listName)
+
+	// 先查询该列表的所有条目
+	url := fmt.Sprintf("http://%s/rest/ip/firewall/address-list?list=%s", ds.RouterOSHost, listName)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.SetBasicAuth(ds.RouterOSUser, ds.RouterOSPassword)
+	req.Header.Set("Accept", "application/json")
+
+	if ds.VerboseLog {
+		ds.Infof("[RouterOS Clear] Querying address list: %s", listName)
+	}
+
+	resp, err := ds.httpClient.Do(req)
+	if err != nil {
+		ds.Errorf("Failed to query RouterOS address list %s: %v", listName, err)
+		return fmt.Errorf("failed to query RouterOS: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		ds.Errorf("RouterOS API returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("RouterOS API returned status %d", resp.StatusCode)
+	}
+
+	// 解析 JSON 响应
+	var items []RouterOSAddressItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return fmt.Errorf("failed to parse RouterOS response: %v", err)
+	}
+
+	// 删除所有查询到的条目
+	deletedCount := 0
+	for _, item := range items {
+		deleteURL := fmt.Sprintf("http://%s/rest/ip/firewall/address-list/remove", ds.RouterOSHost)
+		deleteData := map[string]string{
+			".id": item.ID,
+		}
+
+		jsonData, err := json.Marshal(deleteData)
+		if err != nil {
+			ds.Warningf("Failed to marshal delete request for ID %s: %v", item.ID, err)
+			continue
+		}
+
+		deleteReq, err := http.NewRequest("POST", deleteURL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			ds.Warningf("Failed to create delete request for ID %s: %v", item.ID, err)
+			continue
+		}
+
+		deleteReq.SetBasicAuth(ds.RouterOSUser, ds.RouterOSPassword)
+		deleteReq.Header.Set("Content-Type", "application/json")
+
+		deleteResp, err := ds.httpClient.Do(deleteReq)
+		if err != nil {
+			ds.Warningf("Failed to delete address ID %s (%s): %v", item.ID, item.Address, err)
+			continue
+		}
+
+		deleteBody, _ := io.ReadAll(deleteResp.Body)
+		deleteResp.Body.Close()
+
+		if deleteResp.StatusCode != http.StatusOK && deleteResp.StatusCode != http.StatusCreated {
+			ds.Warningf("Failed to delete address ID %s (%s) - Status: %d, Body: %s",
+				item.ID, item.Address, deleteResp.StatusCode, string(deleteBody))
+			continue
+		}
+
+		deletedCount++
+		if ds.VerboseLog {
+			ds.Infof("[RouterOS Clear] Deleted %s (ID: %s)", item.Address, item.ID)
+		}
+	}
+
+	ds.Infof("Cleared %d addresses from RouterOS list: %s", deletedCount, listName)
+
+	// 清空本地缓存
+	ds.addressCacheMu.Lock()
+	if ds.addressCache[listName] != nil {
+		ds.addressCache[listName] = make(map[string]*RouterOSCacheEntry)
+	}
+	ds.addressCacheMu.Unlock()
+
+	return nil
+}
+
 // initializeRouterOSCache 初始化 RouterOS 地址缓存
 func (ds *DomainSwitch) initializeRouterOSCache() error {
 	if !ds.RouterOSEnabled {
@@ -1055,11 +1157,11 @@ func (ds *DomainSwitch) initializeRouterOSCache() error {
 
 	ds.Infof("Initializing RouterOS address cache...")
 
-	// 为每个配置了 TTL > 0 的域名列表加载现有地址
+	// 清空所有配置的 RouterOS 地址列表
 	for _, listConfig := range ds.DomainLists {
-		if listConfig.RouterOSTTL > 0 {
-			if err := ds.loadRouterOSAddressList(listConfig.RouterOSList); err != nil {
-				ds.Warningf("Failed to load RouterOS address list %s: %v", listConfig.RouterOSList, err)
+		if listConfig.RouterOSList != "" {
+			if err := ds.clearRouterOSAddressList(listConfig.RouterOSList); err != nil {
+				ds.Warningf("Failed to clear RouterOS address list %s: %v", listConfig.RouterOSList, err)
 			}
 		}
 	}
