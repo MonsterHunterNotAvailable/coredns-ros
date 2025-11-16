@@ -8,6 +8,7 @@ import (
 	_ "github.com/coredns/coredns/plugin/cache"    // DNS 缓存
 	_ "github.com/coredns/coredns/plugin/errors"   // 错误处理
 	_ "github.com/coredns/coredns/plugin/forward"  // DNS 转发（备用）
+	_ "github.com/coredns/coredns/plugin/hosts"    // 固定 h
 	_ "github.com/coredns/coredns/plugin/log"      // 日志记录
 	_ "github.com/coredns/coredns/plugin/template" // 模板处理（IPv6 过滤）
 
@@ -18,7 +19,8 @@ import (
 func main() {
 	// 设置插件执行顺序（非常重要）
 	dnsserver.Directives = []string{
-		"errors",       // 错误处理（最先）
+		"hosts",        // 固定 host 解析（最先，优先级最高）
+		"errors",       // 错误处理
 		"log",          // 日志记录
 		"cache",        // DNS 缓存
 		"template",     // 模板处理（IPv6 过滤）

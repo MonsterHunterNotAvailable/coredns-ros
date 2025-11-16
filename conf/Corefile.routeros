@@ -1,4 +1,14 @@
 .:53 {
+    # 固定 host 解析（内联配置）
+    hosts {
+        192.168.1.100 example.com www.example.com
+        10.0.0.1 api.test.com
+        172.16.0.50 test.local
+        192.168.1.200 myapp.local app.local
+        ttl 3600
+        fallthrough
+    }
+    
     # 过滤 IPv6 查询
     template ANY AAAA {
         rcode NOERROR
