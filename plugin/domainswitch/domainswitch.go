@@ -424,6 +424,9 @@ func (ds *DomainSwitch) startHTTPReloadServer() {
 	// 获取状态信息
 	mux.HandleFunc("/status", ds.handleStatus)
 
+	// 查询 RouterOS 缓存
+	mux.HandleFunc("/cache", ds.handleCacheQuery)
+
 	ds.httpServer = &http.Server{
 		Addr:    ":" + ds.ReloadHTTPPort,
 		Handler: mux,
@@ -607,6 +610,60 @@ func (ds *DomainSwitch) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+// handleCacheQuery 处理 RouterOS 缓存查询请求
+func (ds *DomainSwitch) handleCacheQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ds.addressCacheMu.RLock()
+	defer ds.addressCacheMu.RUnlock()
+
+	// 构建缓存信息
+	cacheInfo := make(map[string]interface{})
+
+	for listName, ipMap := range ds.addressCache {
+		entries := make([]map[string]interface{}, 0, len(ipMap))
+
+		for ip, entry := range ipMap {
+			entryInfo := map[string]interface{}{
+				"ip":         ip,
+				"id":         entry.ID,
+				"expires_at": entry.ExpiresAt.Format("2006-01-02 15:04:05"),
+			}
+
+			// 计算剩余时间
+			remaining := time.Until(entry.ExpiresAt)
+			if remaining < 0 {
+				entryInfo["status"] = "expired"
+				entryInfo["remaining"] = "已过期"
+			} else if entry.ExpiresAt.Year() > 9999 {
+				entryInfo["status"] = "permanent"
+				entryInfo["remaining"] = "永不过期"
+			} else {
+				entryInfo["status"] = "valid"
+				entryInfo["remaining"] = remaining.String()
+			}
+
+			entries = append(entries, entryInfo)
+		}
+
+		cacheInfo[listName] = map[string]interface{}{
+			"count":   len(entries),
+			"entries": entries,
+		}
+	}
+
+	result := map[string]interface{}{
+		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"cache":     cacheInfo,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 // stopHTTPReloadServer 停止 HTTP 重载服务器
@@ -1185,11 +1242,12 @@ func (ds *DomainSwitch) initializeRouterOSCache() error {
 
 	ds.Infof("Initializing RouterOS address cache...")
 
-	// 清空所有配置的 RouterOS 地址列表
+	// 为每个配置了 RouterOS 地址列表的域名列表加载现有地址
+	// TTL > 0 表示需要处理过期，TTL = 0 表示永不过期但仍需加载
 	for _, listConfig := range ds.DomainLists {
 		if listConfig.RouterOSList != "" {
-			if err := ds.clearRouterOSAddressList(listConfig.RouterOSList); err != nil {
-				ds.Warningf("Failed to clear RouterOS address list %s: %v", listConfig.RouterOSList, err)
+			if err := ds.loadRouterOSAddressList(listConfig.RouterOSList); err != nil {
+				ds.Warningf("Failed to load RouterOS address list %s: %v", listConfig.RouterOSList, err)
 			}
 		}
 	}
