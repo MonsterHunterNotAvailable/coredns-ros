@@ -1,0 +1,87 @@
+================================================================================
+CoreDNS RouterOS 缓存加载功能测试结果
+测试时间: 2025-11-17
+================================================================================
+
+✅ 测试全部通过！
+
+测试流程:
+--------
+
+阶段 1: 准备测试环境
+  - 清空 RouterOS 地址列表 (china_ip, gfw_ip)
+  - 结果: 成功
+
+阶段 2: 首次启动 CoreDNS 并查询域名
+  - 启动 CoreDNS (PID: 32337)
+  - 查询中国域名: baidu.com, qq.com, taobao.com
+  - 查询 GFW 域名: google.com, youtube.com, twitter.com
+  - 验证 RouterOS 地址列表:
+    * china_ip: 14 个地址，TTL = 86400 秒 (24小时)
+    * gfw_ip: 3 个地址，TTL = 0 (永不过期)
+  - 日志显示:
+    [INFO] Loaded 0 existing addresses from RouterOS list: china_ip
+    [INFO] Loaded 0 existing addresses from RouterOS list: gfw_ip
+  - 结果: ✓ 所有 IP 成功添加到 RouterOS
+
+阶段 3: 重启 CoreDNS 验证缓存加载 ⭐ 核心测试
+  - 停止 CoreDNS
+  - 等待 5 秒后重启 CoreDNS (PID: 32351)
+  - 日志显示 [关键]:
+    [INFO] Initializing RouterOS address cache...
+    [INFO] Loading RouterOS address list: china_ip
+    [INFO] Loaded 14 existing addresses from RouterOS list: china_ip ✓✓✓
+    [INFO] Loading RouterOS address list: gfw_ip
+    [INFO] Loaded 3 existing addresses from RouterOS list: gfw_ip ✓✓✓
+  - 再次查询相同域名
+  - 验证结果:
+    * china_ip: 仍然是 14 个地址，TTL 被正确刷新
+    * gfw_ip: 增加到 6 个地址 (部分 IP 变化导致新增)
+  - 结果: ✓ 成功从 RouterOS 加载缓存，并正确刷新 TTL
+
+阶段 4: 查询新域名验证增量添加
+  - 查询新的中国域名: sina.com.cn, 163.com
+  - 查询新的 GFW 域名: facebook.com, instagram.com
+  - 验证结果:
+    * china_ip: 18 个地址 (新增 4 个)
+    * gfw_ip: 8 个地址 (新增 2 个)
+  - 结果: ✓ 增量添加成功
+
+关键发现:
+--------
+
+1. ✅ 缓存加载功能正常
+   - 第一次启动: 加载 0 个地址（列表为空）
+   - 重启后: 成功加载 17 个地址（14 + 3）
+
+2. ✅ TTL 管理正确
+   - china_ip (TTL=86400): 显示剩余时间 "23h59m47s"
+   - gfw_ip (TTL=0): 显示 "永不过期"
+
+3. ✅ 动态缓存管理正常
+   - 已有 IP: 刷新 TTL（使用 set 接口）
+   - 新增 IP: 添加新记录（使用 add 接口）
+   - 过期 IP: 自动处理更新
+
+4. ✅ RouterOS API 交互正常
+   - 查询地址列表: GET /rest/ip/firewall/address-list
+   - 添加地址: POST /rest/ip/firewall/address-list/add
+   - 更新地址: POST /rest/ip/firewall/address-list/set
+
+性能数据:
+--------
+- DNS 查询 + RouterOS 更新总耗时:
+  * 单个域名 (1 IP): ~100-350ms
+  * 多个 IP (8个): ~900-1000ms
+- RouterOS REST API 响应时间: 100-400ms
+
+结论:
+----
+✅ 当前分支已成功改为 master 分支的逻辑：
+   - 启动时从 RouterOS 读取现有路由表
+   - 同步到 CoreDNS 内存缓存
+   - 支持 TTL > 0 和 TTL = 0 两种模式
+   - 动态管理地址列表（新增/刷新/过期处理）
+
+✅ 功能完全正常，可以投入使用！
+

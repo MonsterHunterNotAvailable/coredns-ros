@@ -1,0 +1,130 @@
+================================================================================
+CoreDNS RouterOS 缓存测试使用说明
+================================================================================
+
+测试脚本: test_cache_comparison.py
+
+测试配置:
+--------
+- 大循环次数: 3 次
+- 每次大循环: 4 轮 DNS 查询 + 1 轮重启验证
+- 总测试轮次: 3 × 5 = 15 轮
+- RouterOS 清空: 仅在最开始执行一次
+- 预计耗时: 约 8-10 分钟
+
+运行测试:
+--------
+cd /Users/yanjinghui/mygit/coredns
+python3 test_cache_comparison.py
+
+实时查看进度:
+------------
+# 在另一个终端窗口运行
+tail -f test_output_full.log
+
+# 或者查看最新输出
+tail -100 test_output_full.log
+
+查看测试结果:
+-----------
+# 查看完整日志
+cat test_output_full.log
+
+# 查看数据比对结果
+grep -A 10 "数据比对" test_output_full.log
+
+# 查看所有"完全一致"的结果
+grep "完全一致" test_output_full.log
+
+# 查看大循环完成情况
+grep "大循环.*完成" test_output_full.log
+
+测试流程:
+--------
+每次大循环包含:
+
+[初始化] - 仅第一次执行
+  └─ 清空 RouterOS 地址列表
+
+[大循环 1/3]
+  ├─ 阶段 1: 启动 CoreDNS
+  ├─ 阶段 2-5: 4 轮 DNS 查询
+  │   ├─ 第1轮: 初始域名 (baidu, qq, google, youtube)
+  │   ├─ 第2轮: 部分重复 + 新域名 (taobao, sina, twitter, facebook)
+  │   ├─ 第3轮: 全新域名 (163, sohu, jd, instagram, reddit)
+  │   └─ 第4轮: 重复旧域名（验证缓存）
+  ├─ 阶段 6: 重启 CoreDNS
+  └─ 阶段 7: 重启后查询验证
+
+[大循环 2/3]
+  └─ 同上流程（RouterOS 数据不清空，累积测试）
+
+[大循环 3/3]
+  └─ 同上流程（RouterOS 数据继续累积）
+
+测试验证点:
+----------
+✓ 数据一致性: CoreDNS 缓存 vs RouterOS 地址表
+✓ TTL 管理: TTL > 0 的自动过期和刷新
+✓ 永不过期: TTL = 0 的地址管理
+✓ 缓存加载: 重启后从 RouterOS 加载数据
+✓ 增量添加: 新域名正确添加
+✓ 缓存命中: 重复域名正确处理
+
+测试输出说明:
+------------
+[步骤] - 蓝色，表示正在执行的操作
+✓ 成功 - 绿色，操作成功
+⚠ 警告 - 黄色，数据差异（可能正常）
+✗ 错误 - 红色，操作失败
+
+数据差异说明:
+-----------
+"仅在 RouterOS" - TTL=0 的地址（gfw_ip），运行时不在缓存中是正常的
+"仅在 CoreDNS" - 可能是还未写入 RouterOS（等待中）
+
+关键成功标志:
+-----------
+看到这个输出表示测试成功:
+  "✓✓✓ 数据完全一致！"
+
+特别是在重启后的比对中看到完全一致，说明缓存加载功能正常。
+
+手动验证 RouterOS:
+----------------
+# 查询 china_ip 列表
+curl -u admin:password http://192.168.50.137:80/rest/ip/firewall/address-list?list=china_ip
+
+# 查询 gfw_ip 列表  
+curl -u admin:password http://192.168.50.137:80/rest/ip/firewall/address-list?list=gfw_ip
+
+# 查询 CoreDNS 缓存
+curl http://127.0.0.1:8182/cache
+
+停止测试:
+--------
+如果需要中途停止测试，按 Ctrl+C
+
+清理环境:
+--------
+# 清空 RouterOS 地址列表（如果需要）
+python3 << 'EOF'
+import requests
+from requests.auth import HTTPBasicAuth
+
+def clear_list(list_name):
+    url = f"http://192.168.50.137:80/rest/ip/firewall/address-list?list={list_name}"
+    resp = requests.get(url, auth=HTTPBasicAuth("admin", "password"))
+    if resp.status_code == 200:
+        for item in resp.json():
+            requests.post(
+                f"http://192.168.50.137:80/rest/ip/firewall/address-list/remove",
+                json={".id": item[".id"]},
+                auth=HTTPBasicAuth("admin", "password")
+            )
+        print(f"Cleared {list_name}")
+
+clear_list("china_ip")
+clear_list("gfw_ip")
+EOF
+
