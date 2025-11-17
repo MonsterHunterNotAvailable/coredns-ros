@@ -253,8 +253,9 @@ func (ds *DomainSwitch) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	}
 
 	// 如果匹配到列表且启用了 RouterOS，且 IP 不在黑名单中，提取 IP 并添加到地址列表
+	// 同步执行，确保 RouterOS 路由添加完成后再返回 DNS 响应
 	if listConfig != nil && ds.RouterOSEnabled && msg.Rcode == dns.RcodeSuccess && !isBlocked {
-		go ds.addToRouterOS(qname, msg, listConfig)
+		ds.addToRouterOS(qname, msg, listConfig)
 	}
 
 	// 写入响应
@@ -665,6 +666,8 @@ func (ds *DomainSwitch) extractIPsFromMsg(msg *dns.Msg) []string {
 
 // addToRouterOS 将解析出的 IP 添加到 RouterOS 地址列表
 func (ds *DomainSwitch) addToRouterOS(domain string, msg *dns.Msg, listConfig *DomainListConfig) {
+	startTime := time.Now()
+
 	if msg == nil || len(msg.Answer) == 0 {
 		return
 	}
@@ -682,15 +685,24 @@ func (ds *DomainSwitch) addToRouterOS(domain string, msg *dns.Msg, listConfig *D
 	}
 
 	// 为每个 IP 添加到 RouterOS
+	successCount := 0
 	for _, ip := range ips {
 		err := ds.addIPToRouterOS(ip, domain, listConfig)
 		if err != nil {
 			ds.Warningf("Failed to add %s (%s) to RouterOS: %v", ip, domain, err)
 		} else {
+			successCount++
 			if ds.VerboseLog {
 				ds.Infof("[RouterOS] Added %s (%s) to address-list %s", ip, domain, listConfig.RouterOSList)
 			}
 		}
+	}
+
+	totalDuration := time.Since(startTime)
+	// 记录总耗时（如果超过阈值或详细日志模式）
+	if ds.VerboseLog || totalDuration > 100*time.Millisecond {
+		ds.Infof("[RouterOS] Total time for %s: %v (%d/%d IPs succeeded)",
+			domain, totalDuration, successCount, len(ips))
 	}
 }
 
@@ -852,13 +864,16 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string, listConfig *DomainLi
 	req.SetBasicAuth(ds.RouterOSUser, ds.RouterOSPassword)
 	req.Header.Set("Content-Type", "application/json")
 
-	// 发送请求
+	// 发送请求（记录开始时间）
+	startTime := time.Now()
 	if ds.VerboseLog {
 		ds.Infof("[RouterOS POST] Sending request...")
 	}
 	resp, err := ds.httpClient.Do(req)
+	requestDuration := time.Since(startTime)
+
 	if err != nil {
-		ds.Errorf("[RouterOS POST] Request failed: %v", err)
+		ds.Errorf("[RouterOS POST] Request failed after %v: %v", requestDuration, err)
 		return fmt.Errorf("failed to send request: %v", err)
 	}
 	defer resp.Body.Close()
@@ -866,11 +881,16 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string, listConfig *DomainLi
 	// 读取响应
 	body, _ := io.ReadAll(resp.Body)
 
-	// 记录响应信息
+	// 记录响应信息（包含耗时）
 	if ds.VerboseLog {
-		ds.Infof("[RouterOS POST] Response Status: %d %s", resp.StatusCode, resp.Status)
+		ds.Infof("[RouterOS POST] Response Status: %d %s (Time: %v)", resp.StatusCode, resp.Status, requestDuration)
 		ds.Infof("[RouterOS POST] Response Headers: %v", resp.Header)
 		ds.Infof("[RouterOS POST] Response Body: %s", string(body))
+	} else {
+		// 即使不是详细日志模式，也记录耗时（如果超过阈值）
+		if requestDuration > 100*time.Millisecond {
+			ds.Infof("[RouterOS] REST API took %v for %s (%s)", requestDuration, ip, addressList)
+		}
 	}
 
 	// 检查响应状态
@@ -903,9 +923,13 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string, listConfig *DomainLi
 			addReq.SetBasicAuth(ds.RouterOSUser, ds.RouterOSPassword)
 			addReq.Header.Set("Content-Type", "application/json")
 
-			// 发送 add 请求
+			// 发送 add 请求（记录重试耗时）
+			retryStartTime := time.Now()
 			addResp, err := ds.httpClient.Do(addReq)
+			retryDuration := time.Since(retryStartTime)
+
 			if err != nil {
+				ds.Errorf("[RouterOS Retry] Failed after %v: %v", retryDuration, err)
 				return fmt.Errorf("failed to retry add request: %v", err)
 			}
 			defer addResp.Body.Close()
@@ -913,8 +937,12 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string, listConfig *DomainLi
 			addBody, _ := io.ReadAll(addResp.Body)
 
 			if addResp.StatusCode != http.StatusOK && addResp.StatusCode != http.StatusCreated {
-				ds.Errorf("[RouterOS Retry] Add also failed - Status: %d, Body: %s", addResp.StatusCode, string(addBody))
+				ds.Errorf("[RouterOS Retry] Add also failed after %v - Status: %d, Body: %s", retryDuration, addResp.StatusCode, string(addBody))
 				return fmt.Errorf("RouterOS retry add returned status %d: %s", addResp.StatusCode, string(addBody))
+			}
+
+			if ds.VerboseLog {
+				ds.Infof("[RouterOS Retry] Add request took %v", retryDuration)
 			}
 
 			// 更新缓存中的 ID

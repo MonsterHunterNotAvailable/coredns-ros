@@ -14,6 +14,7 @@ import base64
 import re
 import urllib.request
 import urllib.error
+import ssl
 import sys
 from typing import Set, List
 
@@ -27,15 +28,20 @@ class GFWListParser:
         print(f"正在从 {self.gfwlist_url} 获取 GFWList...")
         
         try:
-            with urllib.request.urlopen(self.gfwlist_url, timeout=30) as response:
+            # 创建未验证SSL证书的上下文（解决macOS证书问题）
+            # Create unverified SSL context (to solve macOS certificate issues)
+            context = ssl._create_unverified_context()
+            
+            with urllib.request.urlopen(self.gfwlist_url, timeout=30, context=context) as response:
                 data = response.read().decode('utf-8')
-                print(f"✅ 成功获取数据，大小: {len(data)} 字节")
+                print(f"✅ Successfully fetched data, size: {len(data)} bytes")
                 return data
         except urllib.error.URLError as e:
-            print(f"❌ 网络错误: {e}")
+            print(f"❌ Network error: {e}")
+            print(f"💡 Tip: Please check your network connection or try again later")
             sys.exit(1)
         except Exception as e:
-            print(f"❌ 获取失败: {e}")
+            print(f"❌ Failed to fetch: {e}")
             sys.exit(1)
     
     def decode_gfwlist(self, encoded_data: str) -> str:
@@ -62,6 +68,10 @@ class GFWListParser:
         
         domains = set()
         lines = gfwlist_content.split('\n')
+        total_lines = len(lines)
+        
+        # 统计有效规则行数（非注释、非空行）
+        valid_rules = 0
         
         for line in lines:
             line = line.strip()
@@ -74,12 +84,16 @@ class GFWListParser:
             if line.startswith('@@'):
                 continue
             
+            valid_rules += 1
+            
             # 提取域名的正则表达式模式
             domain = self._extract_domain_from_rule(line)
             if domain:
                 domains.add(domain)
         
-        print(f"✅ 提取到 {len(domains)} 个唯一域名")
+        print(f"📥 Total lines downloaded: {total_lines}")
+        print(f"📋 Valid domain rules: {valid_rules}")
+        print(f"✅ Extracted unique domains: {len(domains)}")
         return domains
     
     def _extract_domain_from_rule(self, rule: str) -> str:
@@ -157,7 +171,7 @@ class GFWListParser:
     
     def save_domains(self, domains: Set[str], output_file: str) -> None:
         """保存域名列表到文件"""
-        print(f"正在保存域名列表到 {output_file}...")
+        print(f"\n正在保存域名列表到 {output_file}...")
         
         # 排序域名列表
         sorted_domains = sorted(domains)
@@ -178,7 +192,8 @@ class GFWListParser:
                 for domain in sorted_domains:
                     f.write(f"{domain}\n")
             
-            print(f"✅ 成功保存 {len(sorted_domains)} 个域名到 {output_file}")
+            print(f"💾 Wrote {len(sorted_domains)} domains to {output_file}")
+            print(f"✅ Successfully saved!")
             
         except Exception as e:
             print(f"❌ 保存文件失败: {e}")
@@ -233,8 +248,11 @@ class GFWListParser:
         # 5. 保存到文件
         self.save_domains(domains, output_file)
         
-        print(f"\n✅ 处理完成！域名列表已保存到 {output_file}")
-        print(f"📊 共提取 {len(domains)} 个唯一域名")
+        print(f"\n{'='*60}")
+        print(f"✅ Processing completed!")
+        print(f"📊 Total unique domains extracted: {len(domains)}")
+        print(f"💾 Domains written to file: {output_file}")
+        print(f"{'='*60}")
 
 def main():
     """主函数"""
