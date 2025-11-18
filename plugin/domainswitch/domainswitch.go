@@ -695,6 +695,12 @@ func NewDomainSwitch(defaultUpstream string) *DomainSwitch {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
+				// 连接池配置
+				MaxIdleConns:        100, // 总连接数
+				MaxIdleConnsPerHost: 10,  // 每个host最多10个空闲连接（默认2）
+				MaxConnsPerHost:     20,  // 每个host最多20个连接
+				IdleConnTimeout:     90 * time.Second,
+				// TLS 配置
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		},
@@ -888,6 +894,20 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string, listConfig *DomainLi
 		}
 	} else {
 		// TTL = 0，不设置 timeout（永不过期）
+		// 但仍需要检查缓存，避免重复添加
+		ds.addressCacheMu.RLock()
+		cacheEntry, exists := ds.addressCache[addressList][ip]
+		ds.addressCacheMu.RUnlock()
+
+		if exists && cacheEntry != nil {
+			// 已存在且已缓存，跳过
+			if ds.VerboseLog {
+				ds.Infof("[RouterOS Skip] IP %s already in cache (TTL=0), skipping", ip)
+			}
+			return nil
+		}
+
+		// 不存在，执行添加
 		url = fmt.Sprintf("http://%s/rest/ip/firewall/address-list/add", ds.RouterOSHost)
 		method = "POST"
 		data = map[string]string{
@@ -1034,20 +1054,36 @@ func (ds *DomainSwitch) addIPToRouterOS(ip, comment string, listConfig *DomainLi
 		ds.Infof("[RouterOS POST] Success - IP %s added/updated to list %s", ip, addressList)
 	}
 
-	// 如果启用 RouterOS Auto TTL 且是添加操作，需要更新缓存中的真实 ID
-	if routerosTTL > 0 && method == "POST" && strings.Contains(url, "/add") {
-		// 添加操作：从响应中获取新的 ID，更新缓存中的临时 ID
+	// 如果是添加操作，需要更新缓存中的真实 ID（包括 TTL=0 的情况）
+	if method == "POST" && strings.Contains(url, "/add") {
+		// 添加操作：从响应中获取新的 ID，更新缓存
 		var response map[string]interface{}
 		if err := json.Unmarshal(body, &response); err == nil {
 			if ret, ok := response["ret"].(string); ok {
 				ds.addressCacheMu.Lock()
-				if existingEntry := ds.addressCache[addressList][ip]; existingEntry != nil {
-					existingEntry.ID = ret // 更新临时 ID 为真实 ID
-					if ds.VerboseLog {
-						ds.Infof("[CoreDNS Cache] Updated IP %s ID from pending to %s", ip, ret)
-					}
+				if ds.addressCache[addressList] == nil {
+					ds.addressCache[addressList] = make(map[string]*RouterOSCacheEntry)
+				}
+
+				// TTL=0 的条目设置一个很远的过期时间（365天），TTL>0 则按实际 TTL
+				expiresAt := time.Now().Add(365 * 24 * time.Hour)
+				if routerosTTL > 0 {
+					expiresAt = time.Now().Add(time.Duration(routerosTTL) * time.Second)
+				}
+
+				ds.addressCache[addressList][ip] = &RouterOSCacheEntry{
+					ID:        ret,
+					ExpiresAt: expiresAt,
 				}
 				ds.addressCacheMu.Unlock()
+
+				if ds.VerboseLog {
+					if routerosTTL > 0 {
+						ds.Infof("[CoreDNS Cache] Updated IP %s ID from pending to %s", ip, ret)
+					} else {
+						ds.Infof("[CoreDNS Cache] Added %s (TTL=0) to cache with ID %s", ip, ret)
+					}
+				}
 			}
 		}
 	}
