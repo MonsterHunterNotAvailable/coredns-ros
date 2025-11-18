@@ -630,22 +630,27 @@ func (ds *DomainSwitch) handleCacheQuery(w http.ResponseWriter, r *http.Request)
 
 		for ip, entry := range ipMap {
 			entryInfo := map[string]interface{}{
-				"ip":         ip,
-				"id":         entry.ID,
-				"expires_at": entry.ExpiresAt.Format("2006-01-02 15:04:05"),
+				"ip": ip,
+				"id": entry.ID,
 			}
 
 			// 计算剩余时间
 			remaining := time.Until(entry.ExpiresAt)
+			// TTL=0（永不过期）的条目剩余时间接近 365 天，判断为 > 300 天即可识别
+			isPermanent := remaining > 300*24*time.Hour
+
 			if remaining < 0 {
 				entryInfo["status"] = "expired"
 				entryInfo["remaining"] = "已过期"
-			} else if entry.ExpiresAt.Year() > 9999 {
+				entryInfo["expires_at"] = entry.ExpiresAt.Format("2006-01-02 15:04:05")
+			} else if isPermanent {
 				entryInfo["status"] = "permanent"
-				entryInfo["remaining"] = "永不过期"
+				entryInfo["remaining"] = "永不过期 (TTL=0)"
+				entryInfo["expires_at"] = "永不过期"
 			} else {
 				entryInfo["status"] = "valid"
 				entryInfo["remaining"] = remaining.String()
+				entryInfo["expires_at"] = entry.ExpiresAt.Format("2006-01-02 15:04:05")
 			}
 
 			entries = append(entries, entryInfo)
@@ -1158,8 +1163,15 @@ func (ds *DomainSwitch) loadRouterOSAddressList(listName string) error {
 			ExpiresAt: expiresAt,
 		}
 		if ds.VerboseLog {
-			ds.Infof("[RouterOS Cache] Loaded %s (ID: %s, Timeout: %s, Expires: %s)",
-				item.Address, item.ID, item.Timeout, expiresAt.Format("2006-01-02 15:04:05"))
+			// 对于 TTL=0（永不过期）的条目，显示更清晰的信息
+			if item.Timeout == "" {
+				ds.Infof("[RouterOS Cache] Loaded %s (ID: %s, TTL: 永不过期)",
+					item.Address, item.ID)
+			} else {
+				// 对于 TTL>0 的条目，显示剩余时间（Timeout 本身就是剩余时间）
+				ds.Infof("[RouterOS Cache] Loaded %s (ID: %s, 剩余时间: %s)",
+					item.Address, item.ID, item.Timeout)
+			}
 		}
 	}
 	ds.addressCacheMu.Unlock()
