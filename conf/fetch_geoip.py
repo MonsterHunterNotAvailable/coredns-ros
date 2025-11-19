@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 从 GitHub releases 下载最新的 geoip.dat，并提取特定服务的 IPv4 地址（CIDR 格式）
-支持的服务：cloudflare, google, facebook, telegram
+支持的服务：cloudflare, google, facebook, telegram, netflix, twitter, github
+
+可以从外部 API 下载 IP 的服务：
+- github 的 IP 可以从 https://api.github.com/meta 获取
 """
 
 import requests
@@ -91,7 +94,7 @@ def parse_protobuf_geoip(data):
     # geoip.dat 使用 V2Ray 的 Protobuf 格式
     # 结构大致是: GeoIPList { entries: [GeoIP { country_code, cidr: [CIDR] }] }
     
-    services = ['cloudflare', 'google', 'facebook', 'telegram', 'netflix', 'twitter']
+    services = ['cloudflare', 'google', 'facebook', 'telegram', 'netflix', 'twitter', 'github']
     service_ips = defaultdict(set)
     
     print("\n正在解析 geoip.dat 文件...")
@@ -100,13 +103,27 @@ def parse_protobuf_geoip(data):
     
     # 在文件中查找服务名称，然后解析相关的 IP 地址范围
     for service in services:
-        service_bytes = service.encode('utf-8')
-        service_lower = service.lower()
-        service_upper = service.upper()
+        # 对于 GitHub，查找多种可能的变体（包括部分匹配）
+        if service == 'github':
+            patterns = [
+                b'github',
+                b'GITHUB',
+                b'GitHub',
+                b'GITHUB1S',
+                b'github.com',
+                b'github.io',
+                b'githubassets',
+                b'githubapp',
+            ]
+        else:
+            service_bytes = service.encode('utf-8')
+            service_lower = service.lower()
+            service_upper = service.upper()
+            patterns = [service_bytes, service_lower.encode('utf-8'), service_upper.encode('utf-8')]
         
         # 查找所有可能的服务名称位置
         positions = []
-        for pattern in [service_bytes, service_lower.encode('utf-8'), service_upper.encode('utf-8')]:
+        for pattern in patterns:
             pos = 0
             while True:
                 pos = data.find(pattern, pos)
@@ -115,7 +132,10 @@ def parse_protobuf_geoip(data):
                 positions.append(pos)
                 pos += 1
         
-        print(f"  找到 '{service}' 出现 {len(positions)} 次")
+        # 去重位置（避免重复处理）
+        positions = sorted(set(positions))
+        
+        print(f"  找到 '{service}' 相关关键字出现 {len(positions)} 次")
         
         # 在找到的位置附近查找 IP 地址
         found_ips = set()
@@ -198,6 +218,56 @@ def parse_protobuf_geoip(data):
     
     # 转换为列表格式
     return {k: list(v) for k, v in service_ips.items()}
+
+
+def get_github_ips_from_api():
+    """从 GitHub Meta API 获取 GitHub IP 地址范围"""
+    print("\n从 GitHub Meta API 获取 IP 地址...")
+    
+    github_ips = []
+    
+    try:
+        response = requests.get("https://api.github.com/meta", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            
+            # GitHub Meta API 返回的字段包括：
+            # - git: Git 操作相关的 IP
+            # - hooks: Webhooks 相关的 IP
+            # - web: Web 服务相关的 IP
+            # - api: API 服务相关的 IP
+            # - packages: Packages 相关的 IP
+            # - pages: GitHub Pages 相关的 IP
+            # - importer: 导入服务相关的 IP
+            # - actions: GitHub Actions 相关的 IP
+            # - dependabot: Dependabot 相关的 IP
+            # - verifiable_password_authentication: 验证密码认证相关的 IP
+            
+            ip_fields = ['git', 'hooks', 'web', 'api', 'packages', 'pages', 
+                        'importer', 'actions', 'dependabot', 'verifiable_password_authentication']
+            
+            for field in ip_fields:
+                if field in data:
+                    field_data = data[field]
+                    # 确保 field_data 是列表
+                    if isinstance(field_data, list):
+                        for ip_range in field_data:
+                            # 只处理 IPv4 地址
+                            if isinstance(ip_range, str) and ':' not in ip_range:  # 排除 IPv6
+                                try:
+                                    # 验证 CIDR 格式
+                                    ipaddress.ip_network(ip_range, strict=False)
+                                    github_ips.append(ip_range)
+                                except:
+                                    pass
+            
+            print(f"  从 GitHub Meta API 获取到 {len(github_ips)} 个 IPv4 CIDR 段")
+        else:
+            print(f"  获取失败: HTTP {response.status_code}")
+    except Exception as e:
+        print(f"  获取失败: {e}")
+    
+    return github_ips
 
 
 def merge_and_optimize_cidr(ip_list):
@@ -512,7 +582,8 @@ def sync_to_routeros(download_dir="geo_ips", config_file="Corefile.routeros"):
         'google_ips.txt': 'gfw_geo_ips',
         'facebook_ips.txt': 'gfw_geo_ips',
         'telegram_ips.txt': 'gfw_geo_ips',
-        'twitter_ips.txt': 'gfw_geo_ips'
+        'twitter_ips.txt': 'gfw_geo_ips',
+        'github_ips.txt': 'gfw_geo_ips'
     }
     
     # Step 1: 生成 RouterOS 脚本
@@ -549,7 +620,7 @@ def sync_to_routeros(download_dir="geo_ips", config_file="Corefile.routeros"):
 
 def main():
     """主函数"""
-    services = ['cloudflare', 'google', 'facebook', 'telegram', 'netflix', 'twitter']
+    services = ['cloudflare', 'google', 'facebook', 'telegram', 'netflix', 'twitter', 'github']
     download_dir = "geo_ips"
     
     print("=" * 60)
@@ -581,6 +652,27 @@ def main():
     
     # 保存结果到 geo_ips 目录
     save_results(service_ips, output_dir=download_dir)
+    
+    # 对于 GitHub，从外部 API 获取 IP（作为补充或替代）
+    if 'github' in services:
+        if not service_ips.get('github') or len(service_ips.get('github', [])) == 0:
+            print("\n" + "=" * 60)
+            print("GitHub IP 从外部 API 获取")
+            print("=" * 60)
+            github_ips = get_github_ips_from_api()
+            if github_ips:
+                service_ips['github'] = github_ips
+                # 重新保存 GitHub IP
+                optimized = merge_and_optimize_cidr(github_ips)
+                if optimized:
+                    filename = f"{download_dir}/github_ips.txt"
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        for cidr in optimized:
+                            f.write(f"{cidr}\n")
+                    print(f"\ngithub:")
+                    print(f"  原始数量: {len(github_ips)} 个")
+                    print(f"  优化后: {len(optimized)} 个 CIDR 段")
+                    print(f"  保存到: {filename}")
     
     # 同步到 RouterOS
     sync_to_routeros(download_dir=download_dir, config_file="Corefile.routeros")
