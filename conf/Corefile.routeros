@@ -29,6 +29,7 @@
         
         # RouterOS 配置       是否开启      rest地址                用户     密码
         routeros_login        true       192.168.50.137:80       admin    password
+        routeros_ftp          true       192.168.50.137:21       admin    password
 
         #全部加载   curl -X POST http://localhost:8182/reload
         #单独加载   curl -X POST http://localhost:8182/reload/china_domains.txt

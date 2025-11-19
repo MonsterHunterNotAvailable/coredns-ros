@@ -342,15 +342,22 @@ def save_results(service_ips, output_dir="."):
             print(f"    ... 还有 {len(optimized) - 10} 个")
 
 def parse_routeros_config(config_file="Corefile.routeros"):
-    """从 Corefile.routeros 解析 RouterOS 登录信息"""
+    """从 Corefile.routeros 解析 RouterOS 登录和 FTP 信息"""
     try:
         with open(config_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 查找 routeros_login 配置行
-        # 格式: routeros_login true 192.168.50.137:80 admin password
+        config = {
+            'enabled': False,
+            'ftp_enabled': False
+        }
+        
+        # 解析配置行
         for line in content.split('\n'):
             line = line.strip()
+            
+            # 查找 routeros_login 配置行
+            # 格式: routeros_login true 192.168.50.137:80 admin password
             if line.startswith('routeros_login'):
                 parts = line.split()
                 if len(parts) >= 5:
@@ -364,22 +371,39 @@ def parse_routeros_config(config_file="Corefile.routeros"):
                         if not host.startswith('http://') and not host.startswith('https://'):
                             host = f'http://{host}'
                         
-                        return {
-                            'enabled': True,
-                            'host': host,
-                            'username': username,
-                            'password': password
-                        }
+                        config['enabled'] = True
+                        config['host'] = host
+                        config['username'] = username
+                        config['password'] = password
+            
+            # 查找 routeros_ftp 配置行
+            # 格式: routeros_ftp true 192.168.50.137:21 admin password
+            elif line.startswith('routeros_ftp'):
+                parts = line.split()
+                if len(parts) >= 5:
+                    ftp_enabled = parts[1].lower() == 'true'
+                    ftp_host = parts[2]
+                    ftp_username = parts[3]
+                    ftp_password = parts[4]
+                    
+                    if ftp_enabled:
+                        config['ftp_enabled'] = True
+                        config['ftp_host'] = ftp_host
+                        config['ftp_username'] = ftp_username
+                        config['ftp_password'] = ftp_password
         
-        print("Warning: RouterOS configuration not found or disabled in Corefile.routeros")
-        return {'enabled': False}
+        if not config['enabled'] and not config['ftp_enabled']:
+            print("Warning: RouterOS configuration not found or disabled in Corefile.routeros")
+            return {'enabled': False, 'ftp_enabled': False}
+        
+        return config
     
     except FileNotFoundError:
         print(f"Warning: Config file {config_file} not found")
-        return {'enabled': False}
+        return {'enabled': False, 'ftp_enabled': False}
     except Exception as e:
         print(f"Error parsing RouterOS config: {e}")
-        return {'enabled': False}
+        return {'enabled': False, 'ftp_enabled': False}
 
 def generate_routeros_script(service_files_map, download_dir="geo_ips", output_file="geoip_import.rsc"):
     """生成 RouterOS 脚本文件（自动去重）"""
@@ -459,18 +483,41 @@ def generate_routeros_script(service_files_map, download_dir="geo_ips", output_f
 
 def upload_file_to_routeros(config, local_file, remote_filename):
     """通过 FTP 上传文件到 RouterOS"""
-    try:
-        # 从 host 中提取 IP 地址
+    # 检查是否启用了 FTP
+    if not config.get('ftp_enabled'):
+        print(f"  Warning: FTP is not enabled, trying to use REST API host for FTP...")
+        # 回退到从 REST API host 提取
+        if not config.get('enabled'):
+            print(f"  ✗ Neither FTP nor REST API is enabled")
+            return False
+        
         host = config['host'].replace('http://', '').replace('https://', '')
         if ':' in host:
             host = host.split(':')[0]
+        username = config.get('username')
+        password = config.get('password')
+        ftp_port = 21
+    else:
+        # 使用 FTP 配置
+        ftp_host = config.get('ftp_host', '')
+        username = config.get('ftp_username')
+        password = config.get('ftp_password')
         
-        print(f"  Connecting to FTP server {host}...")
+        # 解析 FTP host 和端口
+        if ':' in ftp_host:
+            host, port_str = ftp_host.split(':')
+            ftp_port = int(port_str)
+        else:
+            host = ftp_host
+            ftp_port = 21
+    
+    try:
+        print(f"  Connecting to FTP server {host}:{ftp_port}...")
         
         # 连接到 RouterOS FTP
         ftp = FTP()
-        ftp.connect(host, 21, timeout=30)
-        ftp.login(config['username'], config['password'])
+        ftp.connect(host, ftp_port, timeout=30)
+        ftp.login(username, password)
         
         print(f"  Uploading {local_file} as {remote_filename}...")
         
@@ -567,12 +614,19 @@ def sync_to_routeros(download_dir="geo_ips", config_file="Corefile.routeros"):
     # 解析 RouterOS 配置
     config = parse_routeros_config(config_file)
     
-    if not config.get('enabled'):
+    if not config.get('enabled') and not config.get('ftp_enabled'):
         print("RouterOS sync is disabled or configuration not found")
         return
     
-    print(f"RouterOS Host: {config['host']}")
-    print(f"Username: {config['username']}")
+    # 显示配置信息
+    if config.get('enabled'):
+        print(f"REST API Host: {config['host']}")
+        print(f"REST API Username: {config['username']}")
+    
+    if config.get('ftp_enabled'):
+        print(f"FTP Host: {config['ftp_host']}")
+        print(f"FTP Username: {config['ftp_username']}")
+    
     print()
     
     # 定义服务到地址列表的映射
